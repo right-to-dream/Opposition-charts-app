@@ -54,6 +54,7 @@
 
   // ---- state ----
   var cv=document.getElementById("cv"), ctx=cv.getContext("2d");
+  ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality="high";
   var bar=document.getElementById("bar"), wrap=document.getElementById("wrap");
   var txtin=document.getElementById("txtin"), hintEl=document.getElementById("hint");
   var img=null, imgReady=false, lastImageSig=null, lastLoadNonce=null, editable=true;
@@ -194,75 +195,93 @@
     return { x:(e.clientX-r.left)*sx, y:(e.clientY-r.top)*sy };
   }
 
-  // ---- drawing primitives ----
-  function drawArrow(a, active){
-    var dx=a.x2-a.x1, dy=a.y2-a.y1, len=Math.hypot(dx,dy); if(len<1) return;
-    var ux=dx/len, uy=dy/len, w=a.w||10;
-    var head=Math.max(14, w*2.6), bx=a.x2-ux*head, by=a.y2-uy*head;
-    ctx.save(); ctx.shadowColor="rgba(0,0,0,.5)"; ctx.shadowBlur=6; ctx.shadowOffsetY=1;
-    ctx.strokeStyle=a.c; ctx.lineCap="round"; ctx.lineWidth=w;
-    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(bx,by); ctx.stroke();
-    var px=-uy, py=ux, hw=head*0.62;
-    ctx.fillStyle=a.c; ctx.beginPath();
-    ctx.moveTo(a.x2,a.y2); ctx.lineTo(bx+px*hw, by+py*hw); ctx.lineTo(bx-px*hw, by-py*hw);
-    ctx.closePath(); ctx.fill(); ctx.restore();
+  // ---- broadcast drawing system -------------------------------------------------
+  // Annotations are stored in "design" units (a 1050px-wide analysis frame).  This keeps
+  // a saved drawing visually identical on a 720p clip, a 4K still, and the exported PNG.
+  var DESIGN_W=1050;
+  function scale(){ return Math.max(.45, cv.width/DESIGN_W); }
+  function weight(a){ return Math.max(1.2, Math.min(7.5, (a.w||10)*.43))*scale(); }
+  function keyWeight(w){ return w+Math.max(2*scale(),w*.52); }
+  function keyline(){ return "rgba(5,8,12,.82)"; }
+  function prepareStroke(a, dashed){
+    var w=weight(a); ctx.lineCap="round"; ctx.lineJoin="round";
+    // The slim charcoal keyline, rather than a big drop shadow, is what lets a white
+    // analysis line stay readable over shirts, grass, and stadium signage.
+    ctx.strokeStyle=keyline(); ctx.lineWidth=keyWeight(w); if(dashed) ctx.setLineDash(dashed);
+    return w;
   }
-  function arrowHead(ctx2, tipx, tipy, ux, uy, head, col){   // filled triangle head
-    var bx=tipx-ux*head, by=tipy-uy*head, px=-uy, py=ux, hw=head*0.62;
-    ctx2.fillStyle=col; ctx2.beginPath(); ctx2.moveTo(tipx,tipy);
-    ctx2.lineTo(bx+px*hw, by+py*hw); ctx2.lineTo(bx-px*hw, by-py*hw); ctx2.closePath(); ctx2.fill();
-    return {bx:bx, by:by};
+  function finishStroke(a,w,dashed){
+    ctx.strokeStyle=a.c||"#fff"; ctx.lineWidth=w; if(dashed) ctx.setLineDash(dashed); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  function arrowHead(tipx, tipy, ux, uy, w, col){
+    // A compact swept pennant reads cleanly at broadcast scale; the shaft stops at its shoulder.
+    var head=Math.max(12*scale(),w*3.25), bx=tipx-ux*head, by=tipy-uy*head;
+    var px=-uy, py=ux, hw=head*.46, shoulder=head*.18;
+    ctx.save(); ctx.lineJoin="round";
+    ctx.beginPath(); ctx.moveTo(tipx,tipy); ctx.lineTo(bx+px*hw,by+py*hw);
+    ctx.lineTo(bx+ux*shoulder,by+uy*shoulder); ctx.lineTo(bx-px*hw,by-py*hw); ctx.closePath();
+    ctx.fillStyle=keyline(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(tipx,tipy); ctx.lineTo(bx+px*hw*.76,by+py*hw*.76);
+    ctx.lineTo(bx+ux*shoulder,by+uy*shoulder); ctx.lineTo(bx-px*hw*.76,by-py*hw*.76); ctx.closePath();
+    ctx.fillStyle=col; ctx.fill(); ctx.restore();
+    return {bx:bx+ux*shoulder, by:by+uy*shoulder};
+  }
+  function drawArrow(a){
+    var dx=a.x2-a.x1, dy=a.y2-a.y1, len=Math.hypot(dx,dy); if(len<1) return;
+    var ux=dx/len, uy=dy/len, w=weight(a), h;
+    ctx.save(); h=arrowHead(a.x2,a.y2,ux,uy,w,a.c||"#fff");
+    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(h.bx,h.by); prepareStroke(a); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(h.bx,h.by); finishStroke(a,w); ctx.restore();
   }
   function curveCtrl(a){ return { x:(a.cx!=null?a.cx:(a.x1+a.x2)/2), y:(a.cy!=null?a.cy:(a.y1+a.y2)/2) }; }
   function drawCurvedArrow(a){
-    var c=curveCtrl(a), w=a.w||10, head=Math.max(14,w*2.6);
+    var c=curveCtrl(a), w=weight(a);
     var dx=a.x2-c.x, dy=a.y2-c.y, len=Math.hypot(dx,dy)||1, ux=dx/len, uy=dy/len;   // tangent at the end
-    ctx.save(); ctx.shadowColor="rgba(0,0,0,.5)"; ctx.shadowBlur=6; ctx.shadowOffsetY=1;
-    ctx.strokeStyle=a.c; ctx.lineCap="round"; ctx.lineWidth=w;
-    var h=arrowHead(ctx, a.x2, a.y2, ux, uy, head, a.c);          // head first to get shaft stop
-    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.quadraticCurveTo(c.x, c.y, h.bx, h.by); ctx.stroke();
-    ctx.restore();
+    ctx.save(); var h=arrowHead(a.x2,a.y2,ux,uy,w,a.c||"#fff");
+    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.quadraticCurveTo(c.x,c.y,h.bx,h.by); prepareStroke(a); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.quadraticCurveTo(c.x,c.y,h.bx,h.by); finishStroke(a,w); ctx.restore();
   }
   function drawDashedArrow(a){
     var dx=a.x2-a.x1, dy=a.y2-a.y1, len=Math.hypot(dx,dy); if(len<1) return;
-    var ux=dx/len, uy=dy/len, w=a.w||10, head=Math.max(14,w*2.6), bx=a.x2-ux*head, by=a.y2-uy*head;
-    ctx.save(); ctx.shadowColor="rgba(0,0,0,.5)"; ctx.shadowBlur=5;
-    ctx.strokeStyle=a.c; ctx.lineCap="round"; ctx.lineWidth=w;
-    ctx.setLineDash([w*1.7, w*1.3]);
-    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(bx,by); ctx.stroke(); ctx.setLineDash([]);
-    arrowHead(ctx, a.x2, a.y2, ux, uy, head, a.c); ctx.restore();
+    var ux=dx/len, uy=dy/len, w=weight(a), h, dash=[w*2.25,w*1.55];
+    ctx.save(); h=arrowHead(a.x2,a.y2,ux,uy,w,a.c||"#fff");
+    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(h.bx,h.by); prepareStroke(a,dash); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(h.bx,h.by); finishStroke(a,w,dash); ctx.restore();
   }
-  function drawLine(a){ ctx.save(); ctx.shadowColor="rgba(0,0,0,.5)"; ctx.shadowBlur=5;
-    ctx.strokeStyle=a.c; ctx.lineCap="round"; ctx.lineWidth=a.w||8;
-    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(a.x2,a.y2); ctx.stroke(); ctx.restore(); }
+  function drawLine(a){ ctx.save(); var w=weight(a);
+    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(a.x2,a.y2); prepareStroke(a); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(a.x1,a.y1); ctx.lineTo(a.x2,a.y2); finishStroke(a,w); ctx.restore(); }
   function drawSpot(a){
     var cx=(a.x1+a.x2)/2, cy=(a.y1+a.y2)/2;
-    var rx=Math.max(14,Math.abs(a.x2-a.x1)/2), ry=Math.max(9,Math.abs(a.y2-a.y1)/2);
-    ctx.save();
-    var g=ctx.createRadialGradient(cx,cy,Math.min(rx,ry)*0.2,cx,cy,Math.max(rx,ry));
-    g.addColorStop(0, hexA(a.c,0.05)); g.addColorStop(0.72, hexA(a.c,0.34)); g.addColorStop(1, hexA(a.c,0));
-    ctx.fillStyle=g; ctx.beginPath(); ctx.ellipse(cx,cy,rx*1.25,ry*1.25,0,0,7); ctx.fill();
-    ctx.lineWidth=Math.max(3,(a.w||5)); ctx.strokeStyle=a.c;
-    ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,7); ctx.stroke();
-    ctx.lineWidth=1.6; ctx.strokeStyle="rgba(255,255,255,.8)";
-    ctx.beginPath(); ctx.ellipse(cx,cy,rx*0.86,ry*0.86,0,0,7); ctx.stroke();
+    var rx=Math.max(14*scale(),Math.abs(a.x2-a.x1)/2), ry=Math.max(9*scale(),Math.abs(a.y2-a.y1)/2);
+    ctx.save(); var w=weight(a);
+    // A translucent elliptical field gives the highlight a camera-overlay glow without
+    // obscuring the player.  Rings are deliberately sparse and geometrically exact.
+    ctx.fillStyle=hexA(a.c||"#fff",.10); ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=hexA(a.c||"#fff",.18); ctx.lineWidth=w*2.8; ctx.beginPath(); ctx.ellipse(cx,cy,rx*1.10,ry*1.10,0,0,Math.PI*2); ctx.stroke();
+    ctx.strokeStyle=keyline(); ctx.lineWidth=keyWeight(w); ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke();
+    ctx.strokeStyle=a.c||"#fff"; ctx.lineWidth=w; ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke();
     ctx.restore();
   }
   function drawEllipse(a){ var cx=(a.x1+a.x2)/2, cy=(a.y1+a.y2)/2;
-    ctx.save(); ctx.shadowColor="rgba(0,0,0,.45)"; ctx.shadowBlur=5;
-    ctx.strokeStyle=a.c; ctx.lineWidth=a.w||6;
-    ctx.beginPath(); ctx.ellipse(cx,cy,Math.abs(a.x2-a.x1)/2,Math.abs(a.y2-a.y1)/2,0,0,7); ctx.stroke(); ctx.restore(); }
-  function drawRect(a){ ctx.save(); ctx.shadowColor="rgba(0,0,0,.45)"; ctx.shadowBlur=5;
-    ctx.strokeStyle=a.c; ctx.lineWidth=a.w||6;
-    ctx.strokeRect(Math.min(a.x1,a.x2),Math.min(a.y1,a.y2),Math.abs(a.x2-a.x1),Math.abs(a.y2-a.y1)); ctx.restore(); }
-  function drawPen(a){ if(!a.pts||a.pts.length<2) return; ctx.save(); ctx.shadowColor="rgba(0,0,0,.4)"; ctx.shadowBlur=4;
-    ctx.strokeStyle=a.c; ctx.lineWidth=a.w||6; ctx.lineJoin="round"; ctx.lineCap="round";
-    ctx.beginPath(); ctx.moveTo(a.pts[0][0],a.pts[0][1]);
-    for(var i=1;i<a.pts.length;i++) ctx.lineTo(a.pts[i][0],a.pts[i][1]); ctx.stroke(); ctx.restore(); }
-  function drawText(a){ var fs=a.size||34; ctx.save(); ctx.font="800 "+fs+"px Inter,Arial";
-    ctx.textBaseline="middle"; ctx.lineJoin="round";
-    ctx.lineWidth=Math.max(3,fs*0.16); ctx.strokeStyle="#0c0e12"; ctx.strokeText(a.text||"", a.x1, a.y1);
-    ctx.fillStyle=a.c; ctx.fillText(a.text||"", a.x1, a.y1); ctx.restore(); }
+    ctx.save(); var w=weight(a),rx=Math.abs(a.x2-a.x1)/2,ry=Math.abs(a.y2-a.y1)/2;
+    ctx.strokeStyle=keyline(); ctx.lineWidth=keyWeight(w); ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke();
+    ctx.strokeStyle=a.c||"#fff"; ctx.lineWidth=w; ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
+  function drawRect(a){ var x=Math.min(a.x1,a.x2),y=Math.min(a.y1,a.y2),rw=Math.abs(a.x2-a.x1),rh=Math.abs(a.y2-a.y1),w=weight(a);
+    // Corner brackets identify a tactical zone more elegantly than a generic office-software box.
+    var k=Math.min(Math.max(12*scale(),Math.min(rw,rh)*.23),38*scale());
+    function brackets(){ ctx.beginPath(); ctx.moveTo(x+k,y);ctx.lineTo(x,y);ctx.lineTo(x,y+k);ctx.moveTo(x+rw-k,y);ctx.lineTo(x+rw,y);ctx.lineTo(x+rw,y+k);ctx.moveTo(x+rw,y+rh-k);ctx.lineTo(x+rw,y+rh);ctx.lineTo(x+rw-k,y+rh);ctx.moveTo(x+k,y+rh);ctx.lineTo(x,y+rh);ctx.lineTo(x,y+rh-k); }
+    ctx.save(); brackets(); prepareStroke(a);ctx.stroke(); brackets();finishStroke(a,w);ctx.restore(); }
+  function traceSmooth(pts){ ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    for(var i=1;i<pts.length-1;i++){ var mx=(pts[i][0]+pts[i+1][0])/2,my=(pts[i][1]+pts[i+1][1])/2;ctx.quadraticCurveTo(pts[i][0],pts[i][1],mx,my); }
+    var z=pts[pts.length-1];ctx.lineTo(z[0],z[1]); }
+  function drawPen(a){ if(!a.pts||a.pts.length<2) return; ctx.save();var w=weight(a);traceSmooth(a.pts);prepareStroke(a);ctx.stroke();traceSmooth(a.pts);finishStroke(a,w);ctx.restore(); }
+  function drawText(a){ var fs=(a.size||34)*scale(), txt=(a.text||"").toUpperCase(); ctx.save();
+    ctx.font="700 "+fs+"px Inter,Arial,sans-serif"; ctx.textBaseline="middle"; ctx.lineJoin="round";
+    ctx.shadowColor="rgba(0,0,0,.72)";ctx.shadowBlur=Math.max(2,fs*.09);ctx.shadowOffsetY=Math.max(1,fs*.045);
+    ctx.lineWidth=Math.max(2*scale(),fs*.105);ctx.strokeStyle="#05080c";ctx.strokeText(txt,a.x1,a.y1);
+    ctx.shadowColor="transparent";ctx.fillStyle=a.c||"#fff";ctx.fillText(txt,a.x1,a.y1);ctx.restore(); }
 
   // ---- perspective ground marks (a circle on the pitch -> a perspective ellipse) ----
   function ringPoly(gx,gy,gr,mult){ var N=48,poly=[],k; for(k=0;k<N;k++){ var th=k/N*6.28318530718;
@@ -281,15 +300,15 @@
     if(a.type==="spotlight"){
       var ctr=applyH(Hgi,a.gx,a.gy), main=ringPoly(a.gx,a.gy,a.gr,1), i, rA=0;
       for(i=0;i<main.length;i++){ var d=Math.hypot(main[i].x-ctr.x, main[i].y-ctr.y); if(d>rA) rA=d; }
-      var g=ctx.createRadialGradient(ctr.x,ctr.y,Math.max(1,rA*0.15),ctr.x,ctr.y,Math.max(2,rA*1.1));
-      g.addColorStop(0,hexA(a.c,0.05)); g.addColorStop(0.72,hexA(a.c,0.34)); g.addColorStop(1,hexA(a.c,0));
-      ctx.fillStyle=g; pathPoly(ringPoly(a.gx,a.gy,a.gr,1.22)); ctx.fill();
-      ctx.lineWidth=Math.max(3,a.w||5); ctx.strokeStyle=a.c; pathPoly(main); ctx.stroke();
-      ctx.lineWidth=1.6; ctx.strokeStyle="rgba(255,255,255,.8)"; pathPoly(ringPoly(a.gx,a.gy,a.gr,0.86)); ctx.stroke();
+      var w=weight(a);
+      ctx.fillStyle=hexA(a.c||"#fff",.10); pathPoly(main); ctx.fill();
+      ctx.strokeStyle=hexA(a.c||"#fff",.18);ctx.lineWidth=w*2.8;pathPoly(ringPoly(a.gx,a.gy,a.gr,1.12));ctx.stroke();
+      ctx.strokeStyle=keyline();ctx.lineWidth=keyWeight(w);pathPoly(main);ctx.stroke();
+      ctx.strokeStyle=a.c||"#fff";ctx.lineWidth=w;pathPoly(main);ctx.stroke();
     } else {                                             // ground box / circle in perspective
-      ctx.shadowColor="rgba(0,0,0,.45)"; ctx.shadowBlur=5;
-      ctx.lineWidth=a.w||6; ctx.strokeStyle=a.c;
-      pathPoly(a.type==="rect" ? groundQuad(a) : groundEllipsePoly(a)); ctx.stroke();
+      var sw=weight(a), poly=a.type==="rect" ? groundQuad(a) : groundEllipsePoly(a);
+      ctx.lineJoin="round";ctx.lineCap="round";ctx.strokeStyle=keyline();ctx.lineWidth=keyWeight(sw);pathPoly(poly);ctx.stroke();
+      ctx.strokeStyle=a.c||"#fff";ctx.lineWidth=sw;pathPoly(poly);ctx.stroke();
     }
     ctx.restore();
   }
@@ -340,7 +359,7 @@
     if(a.type==="curvedarrow"){ var c=curveCtrl(a), xs=[a.x1,a.x2,c.x], ys=[a.y1,a.y2,c.y];
       var x0=Math.min.apply(0,xs), y0=Math.min.apply(0,ys);
       return {x:x0,y:y0,w:Math.max.apply(0,xs)-x0,h:Math.max.apply(0,ys)-y0}; }
-    if(a.type==="text"){ var fs=a.size||34; var w=ctx.measureText?( (ctx.font="800 "+fs+"px Inter,Arial"), ctx.measureText(a.text||"").width):120;
+    if(a.type==="text"){ var fs=(a.size||34)*scale(); var w=ctx.measureText?( (ctx.font="700 "+fs+"px Inter,Arial"), ctx.measureText((a.text||"").toUpperCase()).width):120;
       return {x:a.x1-6,y:a.y1-fs*0.7,w:w+12,h:fs*1.4}; }
     if(a.type==="pen"){ var xs=a.pts.map(function(p){return p[0];}), ys=a.pts.map(function(p){return p[1];});
       var x0=Math.min.apply(0,xs),y0=Math.min.apply(0,ys); return {x:x0,y:y0,w:Math.max.apply(0,xs)-x0,h:Math.max.apply(0,ys)-y0}; }
@@ -452,8 +471,8 @@
     var v=(txtin.value||"").trim(); txtin.style.display="none";
     if(!v) return;
     pushRedoSnapshot();
-    var fs=Math.round(cv.width/1050*34);            // scale caption to the image resolution
-    anns.push({type:"text", c:color, text:v, x1:+txtin.dataset.x, y1:+txtin.dataset.y, size:Math.max(20,fs)});
+    // Store type at the same design scale as line weights; drawText resolves it at render time.
+    anns.push({type:"text", c:color, text:v, x1:+txtin.dataset.x, y1:+txtin.dataset.y, size:34});
     render(); sync();
   }
   txtin.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); commitText(); }
