@@ -211,18 +211,22 @@ def test_export_schema_ids_and_label_columns(proxy):
     ref = Reference(pd.DataFrame({"team_id": ["T1", "T2"], "team": ["FC Masar Men", "Proxy SC"]}), None,
                     Squad({"33": ("P33", "Kamel"), "3": ("P3", "Abdelrahman")}))
     e = X.build_events(proxy, ref, "M1")
-    assert list(e.columns[:44]) == X.SCHEMA_44
+    assert list(e.columns[:45]) == X.SCHEMA_44
+    assert list(e.columns[7:9]) == ["event_type", "outcome"]
+    assert e.loc[e["event_id"] == 3, "outcome"].iloc[0] == "successful"      # Receive labelled Successfull
+    assert "label_successful" not in e.columns and "outcome_source" not in e.columns
     assert len(e) == len(proxy.raw)
     assert (e["match_id"] == "M1").all()
     first = e[e["event_id"] == 2].iloc[0]
     assert (first["team_id"], first["player_id"], first["player_name"]) == ("T1", "P33", "Kamel")
-    assert first["pass_line_break"] == 1 and first["pass_under_pressure"] == 1
+    assert first["pass_line_break"] is True or first["pass_line_break"] == True  # noqa: E712
+    assert first["pass_under_pressure"] == True  # noqa: E712
     assert (first["start_x"], first["end_x"]) == (90, 60)            # file orientation kept
     assert first["receiver_name"] == "Abdelrahman"
     assert e[e["team"] == "Proxy SC"]["player_id"].eq("").all()        # opponent: no player ids
     assert {"label_line_break", "label_under_pressure", "label_clear"} <= set(e.columns)
     assert e.loc[e["event_id"] == 2, "labels"].iloc[0] == "Line Break, Under Press"   # raw text kept
-    assert e["pass_cross"].dtype.kind == "i"
+    assert e["pass_cross"].dtype == bool
     wb = X.build_workbook(proxy, ref, "M1")
     assert set(pd.ExcelFile(__import__("io").BytesIO(wb)).sheet_names) >= {"Events", "Data audit", "Info"}
 

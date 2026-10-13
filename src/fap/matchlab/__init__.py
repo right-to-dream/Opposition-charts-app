@@ -15,3 +15,7 @@ Layers
   * :mod:`.charts`  — publication-grade matplotlib/mplsoccer charts with a Dark / Light theme.
 """
 from fap.matchlab.loader import MatchData, load_match, read_table  # noqa: F401
+
+# Bump on any change to loading / metrics / export so cached results from an older engine are
+# never served after an update (it is part of every Match Lab cache key).
+ENGINE_VERSION = "2026.10.13-5"

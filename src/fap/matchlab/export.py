@@ -7,7 +7,7 @@ Sheet "Events" (one row per tagged event, in file order):
      "next row's start" proxy, and IDs resolved from the reference tables.
   B. Derived analysis columns: attack-normalised coordinates, outcome, receiver, length, angle,
      direction, progressive, entries, pass type, thirds / channels, phases, possession, xG.
-  C. ``tag_name`` + ``labels`` exactly as tagged, then ``label_<name>`` = 1/0 for every label used.
+  C. ``tag_name`` + ``labels`` exactly as tagged, then ``label_<name>`` = TRUE/FALSE for every label used.
 Other sheets: Carries (derived), Possessions, Players, Team summary, Data audit, Info.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from fap.matchlab.loader import MatchData
 
 CORE = ["event_id", "match_id", "team_id", "team", "player_id", "player_name", "player_number", "event_type",
-        "match_begin_duration", "match_end_duration", "video_begin_duration", "video_end_duration", "period",
+        "outcome", "match_begin_duration", "match_end_duration", "video_begin_duration", "video_end_duration", "period",
         "period_duration", "start_x", "start_y", "end_x", "end_y"]
 PASS = ["pass_height", "pass_body_part", "pass_under_pressure", "pass_cross", "pass_cutback", "pass_through_ball",
         "pass_line_break", "pass_line_broken", "pass_restart_context"]
@@ -39,7 +39,7 @@ SCHEMA_44 = CORE + PASS + SHOT + OTHER
 BOOLEAN = {"pass_under_pressure", "pass_cross", "pass_cutback", "pass_through_ball", "pass_line_break",
            "shot_under_pressure", "shot_first_time", "shot_deflected", "carry_under_pressure",
            "dribble_under_pressure", "recovery_under_pressure", "press_counter_press", "duel_aerial", "duel_ground"}
-assert len(SCHEMA_44) == 44
+assert len(SCHEMA_44) == 45            # the club's 44 columns + `outcome` after event_type
 
 
 def _choose(tokens: set, mapping) -> str:
@@ -111,6 +111,18 @@ def _to_raw(x, y, sign) -> tuple:
     return np.where(sign > 0, x, PITCH_L - x), np.where(sign > 0, PITCH_W - y, y)
 
 
+OUTCOME_LABELS = {"successful", "unsuccessful"}
+
+
+def label_outcome(labels_raw: tuple) -> str:
+    """'successful' / 'unsuccessful' from the row's labels ('Successfull' etc. normalised);
+    'conflicting' when both are tagged; '' when neither is."""
+    has = OUTCOME_LABELS & set(labels_raw)
+    if len(has) == 2:
+        return "conflicting"
+    return next(iter(has), "")
+
+
 def label_column(name: str) -> str:
     return "label_" + re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
@@ -136,6 +148,8 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
     out["player_name"] = np.where(is_our, look.str[1], "")
     out["player_number"] = np.where(is_our & real["player"].ne("0"), real["player"], "")
     out["event_type"] = real["etype"]
+    # outcome of this row's action, read from the labels column only
+    out["outcome"] = real["labels_raw"].map(label_outcome)
     out["match_begin_duration"] = real["txt_clock"]
     out["match_end_duration"] = real["txt_clock_end"]
     out["video_begin_duration"] = real["txt_video"]
@@ -161,14 +175,13 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
     for c in q.columns:
         out[c] = q[c].where(q[c].notna(), out[c])
     for c in BOOLEAN:
-        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype(int)
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype(bool)
 
     # ---- B. derived ------------------------------------------------------------------------------------------
     d = pd.DataFrame(index=real.index)
     d["attack_direction_in_file"] = np.where(real["attack_sign"] > 0, "left_to_right", "right_to_left")
     for a, b in (("x", "x_attack"), ("y", "y_attack"), ("end_x", "end_x_attack"), ("end_y", "end_y_attack")):
         d[b] = real[a].round(2)
-    d["outcome"] = real["outcome"].map({1.0: "success", 0.0: "fail"}).fillna("")
     d["end_source"] = real["end_source"].fillna("")
     d["receiver_number"] = np.where(is_our, real["receiver"].fillna(""), "")
     rl = real["receiver"].fillna("").map(ref.squad.lookup)
@@ -182,10 +195,10 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
                      ("switch", "switch_of_play"), ("key_pass", "key_pass"), ("assist", "assist"),
                      ("set_piece", "set_piece"), ("under_pressure", "under_pressure"), ("transition", "transition"),
                      ("counter_press", "counter_press"), ("in_possession", "in_possession")):
-        d[dst] = real[src].fillna(False).astype(bool).astype(int)
+        d[dst] = real[src].fillna(False).astype(bool)
     ispass_carry = real["etype"].isin(["pass", "carry"])
     for c in ("progressive", "final_third_entry", "box_entry"):
-        d.loc[~ispass_carry, c] = 0
+        d.loc[~ispass_carry, c] = False
     d["pass_type"] = real["pass_type"]
     d["set_piece_kind"] = real["set_piece_kind"]
     d["start_third"] = real["third"]
@@ -198,13 +211,13 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
     d["possession_team"] = real["poss_team"].map(team_off).fillna(real["poss_team"])
     d["xg"] = real["xg"].round(3)
     d["shot_result"] = real["shot_result"]
-    d["shot_goal"] = real["shot_goal"].astype(int)
+    d["shot_goal"] = real["shot_goal"].astype(bool)
     d["minute_decimal"] = real["minute"].round(2)
     # counter-press, on our action that lost the ball (window = md.cp_window)
     from fap.matchlab import counterpress as CP
     cp = CP.analyse(md, our, md.cp_window)
     for col in ("cp_loss", "cp_pressed", "cp_regained"):
-        d[col] = 0
+        d[col] = False
     for col in ("cp_seconds_to_press", "cp_seconds_to_regain"):
         d[col] = np.nan
     d["cp_first_presser"] = ""
@@ -214,9 +227,9 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
         cpi = cp.dropna(subset=["loss_event_id"]).set_index(cp["loss_event_id"].dropna().astype(int))
         m = real["event_id"].isin(cpi.index)
         ids = real.loc[m, "event_id"].astype(int)
-        d.loc[m, "cp_loss"] = 1
-        d.loc[m, "cp_pressed"] = ids.map(cpi["pressed"]).astype(int).to_numpy()
-        d.loc[m, "cp_regained"] = ids.map(cpi["regained"]).astype(int).to_numpy()
+        d.loc[m, "cp_loss"] = True
+        d.loc[m, "cp_pressed"] = ids.map(cpi["pressed"]).astype(bool).to_numpy()
+        d.loc[m, "cp_regained"] = ids.map(cpi["regained"]).astype(bool).to_numpy()
         d.loc[m, "cp_seconds_to_press"] = ids.map(cpi["seconds_to_press"]).round(2).to_numpy()
         d.loc[m, "cp_seconds_to_regain"] = ids.map(cpi["seconds_to_regain"]).round(2).to_numpy()
         d.loc[m, "cp_first_presser"] = ids.map(cpi["first_presser"]).fillna("").to_numpy()
@@ -233,8 +246,8 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
     else:
         c["labels"] = ""
     counts = pd.Series([lab for t in real["labels_raw"] for lab in t]).value_counts()
-    for lab in counts.index:
-        c[label_column(lab)] = real["labels_raw"].map(lambda t, l=lab: int(l in t))
+    for lab in [x for x in counts.index if x not in OUTCOME_LABELS]:     # those live in `outcome`
+        c[label_column(lab)] = real["labels_raw"].map(lambda t, l=lab: l in t)
     return pd.concat([out, d, c], axis=1).reset_index(drop=True)
 
 
@@ -281,8 +294,8 @@ def build_workbook(md: "MatchData", ref: Reference | None = None, match_id: str 
         "x_attack": carries["x"].round(2), "y_attack": carries["y"].round(2),
         "end_x_attack": carries["end_x"].round(2), "end_y_attack": carries["end_y"].round(2),
         "length_m": carries["length"].round(2), "direction": carries["direction"],
-        "progressive": carries["progressive"].astype(int), "final_third_entry": carries["f3_entry"].astype(int),
-        "box_entry": carries["box_entry"].astype(int), "possession_id": carries["poss_id"],
+        "progressive": carries["progressive"].astype(bool), "final_third_entry": carries["f3_entry"].astype(bool),
+        "box_entry": carries["box_entry"].astype(bool), "possession_id": carries["poss_id"],
     })
     poss = md.possessions.copy()
     if not poss.empty:

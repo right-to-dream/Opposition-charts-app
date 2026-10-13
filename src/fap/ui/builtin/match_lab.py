@@ -182,7 +182,8 @@ class MatchLabPage(Page):
             cpw = c[4].slider("Counter-press window (s)", 6, 8, 8, 1, key="ml_cpw",
                               help="Seconds after a ball loss in which a press / a regain counts as counter-press")
         data = f["data"]
-        sig = hashlib.sha1(data).hexdigest()[:16] + f"|{mirror}|{t1}|{t2}|{cpw}"
+        from fap.matchlab import ENGINE_VERSION
+        sig = f"{ENGINE_VERSION}|" + hashlib.sha1(data).hexdigest()[:16] + f"|{mirror}|{t1}|{t2}|{cpw}"
         try:
             with st.spinner("Analysing match…"):
                 md = _load(sig, data, f["name"], mirror, t1, t2, float(cpw))
