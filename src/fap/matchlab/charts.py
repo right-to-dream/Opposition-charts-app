@@ -83,6 +83,7 @@ def _pitch(th: Theme, vertical: bool = False, half: bool = False, **kw):
 
 def _figure(th: Theme, size: tuple, title: str, subtitle: str, note: str = "") -> plt.Figure:
     fig = plt.figure(figsize=size, facecolor=th.bg)
+    fig._ml_title, fig._ml_subtitle, fig._ml_text, fig._ml_muted = title, subtitle, th.text, th.muted
     fig.text(0.025, 0.965, title, ha="left", va="top", fontsize=19, fontweight="bold", color=th.text)
     fig.text(0.025, 0.915, subtitle, ha="left", va="top", fontsize=10.5, color=th.muted)
     fig.add_artist(plt.Line2D([0.025, 0.975], [0.885, 0.885], color=th.grid, lw=1, transform=fig.transFigure))
@@ -159,6 +160,7 @@ def _kpis(fig, th: Theme, rect, items: list[tuple[str, str]], title: str = "", c
         ax.text(x0, yv, value, fontsize=17 if cols == 1 else 15, fontweight="bold",
                 color=accent or th.text, va="top")
         ax.text(x0, yv - h * 0.5, label, fontsize=8, color=th.muted, va="top")
+    return ax
 
 
 def _fmt(v, d: int = 0, pct: bool = False) -> str:
@@ -805,7 +807,7 @@ def defensive_map(md: MatchData, team: str, *, half=None, player=None, theme: Th
         k = P.defending_kpis(md, team, half)
         items = [("PPDA", _fmt(k["PPDA"], 1)), ("Defensive actions", _fmt(len(d))),
                  ("High regains", _fmt(k["High regains"])), ("Counter-press actions", _fmt(k["Counter-press actions"])),
-                 ("Regained ≤5 s after loss", f"{k['Regained ≤5s']}/{k['Losses']}"),
+                 (f"Regained ≤{md.cp_window:.0f} s after loss", f"{k['Regained in window']}/{k['Losses']}"),
                  ("Opp. shots / xG allowed", f"{k['Opp. shots allowed']} / {k['Opp. xG allowed']:.2f}")]
         _kpis(fig, th, [0.71, 0.1, 0.26, 0.76], items, title="Defending")
     return fig
@@ -926,7 +928,7 @@ def phases_out_of_possession(md: MatchData, team: str, *, half=None, player=None
         d = ev[ev["def_phase"] != ""]
         fig = _figure(th, (16, 9.6), f"{team} — Phases of play · out of possession",
                       _subtitle(md, team, half, None, "phase = where the defensive action happens (x)"),
-                      f"Dots = defensive actions · ◆ = counter-press (≤5 s after loss)   |   Low block < {md.thirds[0]:.0f} m ≤ Mid block < {md.thirds[1]:.0f} m ≤ High press")
+                      f"Dots = defensive actions · ◆ = counter-press (≤{md.cp_window:.0f} s after loss)   |   Low block < {md.thirds[0]:.0f} m ≤ Mid block < {md.thirds[1]:.0f} m ≤ High press")
         ax = fig.add_axes([0.02, 0.37, 0.62, 0.5])
         pitch = _pitch(th)
         pitch.draw(ax=ax)
@@ -958,7 +960,7 @@ def phases_out_of_possession(md: MatchData, team: str, *, half=None, player=None
         k = P.defending_kpis(md, team, half)
         tr = P.transitions(md, team, half)
         items = [("PPDA", _fmt(k["PPDA"], 1)), ("Def. action height", _fmt(k["Def. action height (m)"], 1) + " m"),
-                 ("Regained ≤5 s after loss", f"{k['Regained ≤5s']}/{k['Losses']}"),
+                 (f"Regained ≤{md.cp_window:.0f} s after loss", f"{k['Regained in window']}/{k['Losses']}"),
                  ("Opp. box entries allowed", _fmt(k["Opp. box entries allowed"])),
                  ("Opp. shots allowed", _fmt(k["Opp. shots allowed"])), ("Opp. xG allowed", _fmt(k["Opp. xG allowed"], 2))]
         _kpis(fig, th, [0.04, 0.06, 0.44, 0.24], items, title="Defensive control", cols=3)
@@ -1118,48 +1120,6 @@ def sequences(md: MatchData, team: str, *, half=None, player=None, theme: Theme 
     return fig
 
 
-def buildup_sequences(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK,
-                      min_passes: int = 3, max_panels: int = 12) -> plt.Figure:
-    """Small multiples of build-up sequences (start in own third, ≥ min_passes)."""
-    th = theme
-    with plt.rc_context(_rc(th)):
-        poss = md.possessions
-        sel = poss[(poss["team"] == team) & (poss["start_x"] < md.thirds[0]) & (poss["n_passes"] >= min_passes)] if not poss.empty else poss
-        if half is not None and not sel.empty:
-            sel = sel[sel["half"] == half]
-        sel = sel.sort_values(["shot", "reached_f3", "n_passes"], ascending=False).head(max_panels) if not sel.empty else sel
-        fig = _figure(th, (16, 10), f"{team} — Build-up sequences",
-                      _subtitle(md, team, half, None, f"started in own third, ≥{min_passes} passes · best {len(sel)} shown"),
-                      "Line = ball path · ● start · ◆ end (green = shot, amber = reached final third, red = lost)")
-        cols = 4
-        rows = max(1, int(np.ceil(len(sel) / cols)))
-        pitch = _pitch(th)
-        w, h = 0.92 / cols, 0.8 / rows
-        for k, (_, s) in enumerate(sel.iterrows()):
-            r, c = divmod(k, cols)
-            ax = fig.add_axes([0.04 + c * w, 0.86 - (r + 1) * h, w * 0.94, h * 0.84])
-            pitch.draw(ax=ax)
-            ev = md.events[(md.events["poss_id"] == s["poss_id"]) & (md.events["team"] == team) & md.events["x"].notna()]
-            ev = ev[ev["etype"].isin(["pass", "receive", "carry", "dribble", "shot", "recovery", "interception"])]
-            xs, ys = [], []
-            for _, e in ev.iterrows():
-                xs.append(e["x"])
-                ys.append(e["y"])
-                if e["etype"] == "pass" and pd.notna(e["end_x"]):
-                    xs.append(e["end_x"])
-                    ys.append(e["end_y"])
-            col = th.good if s["shot"] else th.accent if s["reached_f3"] else th.bad
-            if xs:
-                ax.plot(xs, ys, color=col, lw=1.6, alpha=0.9, zorder=3)
-                ax.scatter(xs[0], ys[0], s=30, color=th.text, zorder=4)
-                ax.scatter(xs[-1], ys[-1], s=40, marker="D", color=col, zorder=4)
-            ax.set_title(f"{s['start_min']:.0f}'  ·  {s['n_passes']} passes  ·  {s['duration']:.0f}s  ·  {s['end_reason']}",
-                         fontsize=8, color=th.muted, pad=2)
-        if sel.empty:
-            fig.text(0.5, 0.5, "No build-up sequences for this selection", ha="center", color=th.muted, fontsize=12)
-    return fig
-
-
 def team_comparison(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK) -> plt.Figure:
     th = theme
     with plt.rc_context(_rc(th)):
@@ -1239,6 +1199,368 @@ def player_dashboard(md: MatchData, team: str, *, half=None, player=None, theme:
     return fig
 
 
+# ======================================================================== sequences (action by action)
+_SEQ_ACTIONS = ("pass", "carry", "dribble", "shot", "recovery", "interception", "tackle", "receive", "duel", "foul")
+
+
+def sequence_events(md: MatchData, poss_id: int) -> pd.DataFrame:
+    """The possession's own actions (plus the opponent action that ended it), in order."""
+    ev = md.events
+    g = ev[(ev["poss_id"] == poss_id) & ev["x"].notna()]
+    if g.empty:
+        return g
+    team = g["poss_team"].iloc[0]
+    own = g[(g["team"] == team) & g["etype"].isin(_SEQ_ACTIONS)]
+    nxt = ev[(ev["poss_id"] == poss_id + 1) & (ev["team"] != team) & ev["x"].notna()].head(1)
+    return pd.concat([own, nxt])
+
+
+def _action_text(e, names: dict | None = None) -> str:
+    who = f"#{e['player']}" if e["player"] and e["player"] != "0" else ""
+    if names and e["player"] in names:
+        who = f"#{e['player']} {names[e['player']]}"
+    et = e["etype"]
+    if et == "pass":
+        to = f" → #{e['receiver']}" if e.get("receiver") and e["receiver"] not in ("", "0") else ""
+        kind = e["pass_type"] if e["pass_type"] and e["pass_type"] != "Regular" else "Pass"
+        ok = "✓" if e["outcome"] == 1 else "✗" if e["outcome"] == 0 else "?"
+        ln = f" {e['length']:.0f} m" if pd.notna(e.get("length")) else ""
+        prog = " · progressive" if e.get("progressive") else ""
+        return f"{who} {kind}{to} {ok} {str(e['direction']).lower()}{ln}{prog}".strip()
+    if et == "carry":
+        return f"{who} Carry {e['length']:.0f} m{' · progressive' if e.get('progressive') else ''}".strip()
+    if et == "shot":
+        return f"{who} SHOT — {e['shot_result'] or 'no outcome tagged'} (xG {e['xg']:.2f})".strip()
+    if et == "dribble":
+        return f"{who} Dribble {'✓' if e['outcome'] == 1 else '✗' if e['outcome'] == 0 else ''}".strip()
+    if et in ("recovery", "interception", "tackle"):
+        return f"{who} {et.title()} (regain)".strip()
+    return f"{who} {et.replace('_', ' ').title()}".strip()
+
+
+def _draw_sequence(ax, pitch, th: Theme, seq: pd.DataFrame, team: str, numbered: bool = True, small: bool = False) -> list:
+    """Draw every action of a sequence. Returns the numbered actions (for the action list)."""
+    steps = []
+    lw = 1.3 if small else 2.4
+    hw = 3.5 if small else 5
+    own = seq[seq["team"] == team]
+    for _, e in own.iterrows():
+        et = e["etype"]
+        if et == "receive":
+            pitch.scatter(e["x"], e["y"], s=10 if small else 26, color=th.text, alpha=0.6, ax=ax, zorder=4)
+            continue
+        steps.append(e)
+        n = len(steps)
+        if et == "pass" and pd.notna(e["end_x"]):
+            col = th.team if e["outcome"] == 1 else th.bad
+            pitch.arrows(e["x"], e["y"], e["end_x"], e["end_y"], color=col, width=lw, headwidth=hw, headlength=hw,
+                         ax=ax, zorder=5, alpha=0.95)
+        elif et == "carry" and pd.notna(e["end_x"]):
+            pitch.lines(e["x"], e["y"], e["end_x"], e["end_y"], color=th.carry, lw=lw, ls=(0, (2, 2)), ax=ax, zorder=5)
+        elif et == "shot":
+            pitch.scatter(e["x"], e["y"], s=90 if small else 380, marker="*", color=th.accent, edgecolors=th.bg, ax=ax, zorder=7)
+        elif et == "dribble":
+            pitch.scatter(e["x"], e["y"], s=24 if small else 110, marker="D", color=th.good if e["outcome"] == 1 else th.bad,
+                          edgecolors=th.bg, ax=ax, zorder=6)
+        elif et in ("recovery", "interception", "tackle"):
+            pitch.scatter(e["x"], e["y"], s=24 if small else 120, marker="s", color=th.good, edgecolors=th.bg, ax=ax, zorder=6)
+        if numbered and not small:
+            ax.annotate(str(n), (e["x"], e["y"]), xytext=(-9, 9), textcoords="offset points", fontsize=8.5,
+                        fontweight="bold", color=th.bg, ha="center", va="center", zorder=9,
+                        bbox=dict(boxstyle="circle,pad=0.25", fc=th.text, ec="none"))
+            if e["player"] and e["player"] != "0":
+                ax.annotate(f"#{e['player']}", (e["x"], e["y"]), xytext=(10, -10), textcoords="offset points",
+                            fontsize=7.5, color=th.muted, zorder=9)
+    opp = seq[seq["team"] != team]
+    if len(opp):
+        o = opp.iloc[0]
+        ox, oy = PITCH_L - o["x"], PITCH_W - o["y"]                     # their frame → ours
+        pitch.scatter(ox, oy, s=40 if small else 160, marker="X", color=th.bad, edgecolors=th.bg, ax=ax, zorder=8)
+    return steps
+
+
+def buildup_sequences(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK,
+                      min_passes: int = 3, max_panels: int = 12) -> plt.Figure:
+    """Small multiples of build-up sequences (start in own third, ≥ min_passes), every action drawn."""
+    th = theme
+    with plt.rc_context(_rc(th)):
+        poss = md.possessions
+        sel = poss[(poss["team"] == team) & (poss["start_x"] < md.thirds[0]) & (poss["n_passes"] >= min_passes)] if not poss.empty else poss
+        if half is not None and not sel.empty:
+            sel = sel[sel["half"] == half]
+        sel = sel.sort_values(["shot", "reached_f3", "n_passes"], ascending=False).head(max_panels) if not sel.empty else sel
+        fig = _figure(th, (16, 10.4), f"{team} — Build-up sequences",
+                      _subtitle(md, team, half, None, f"started in own third, ≥{min_passes} passes · best {len(sel)} shown"),
+                      "Arrow = pass (blue ok / red lost) · dashed = carry · ■ regain · ◆ dribble · ★ shot · ✕ where the opponent won it")
+        cols = 4
+        rows = max(1, int(np.ceil(len(sel) / cols)))
+        pitch = _pitch(th)
+        w, h = 0.92 / cols, 0.8 / rows
+        for k, (_, s) in enumerate(sel.iterrows()):
+            r, c = divmod(k, cols)
+            ax = fig.add_axes([0.04 + c * w, 0.86 - (r + 1) * h, w * 0.94, h * 0.84])
+            pitch.draw(ax=ax)
+            seq = sequence_events(md, s["poss_id"])
+            _draw_sequence(ax, pitch, th, seq, team, numbered=False, small=True)
+            col = th.good if s["shot"] else th.accent if s["reached_f3"] else th.bad
+            ax.set_title(f"#{s['poss_id']}  ·  {s['start_min']:.0f}'  ·  {s['n_passes']} passes  ·  {s['duration']:.0f}s  ·  {s['end_reason']}",
+                         fontsize=8, color=col, pad=2, fontweight="bold")
+            _set_panel(fig, f"Sequence #{s['poss_id']}", ax)
+        if sel.empty:
+            fig.text(0.5, 0.5, "No build-up sequences for this selection", ha="center", color=th.muted, fontsize=12)
+    return fig
+
+
+def sequence_map(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, poss_id: int | None = None,
+                 names: tuple = ()) -> plt.Figure:
+    """One possession, action by action: numbered steps on the pitch + the action list."""
+    th = theme
+    nm = dict(names)
+    with plt.rc_context(_rc(th)):
+        poss = md.possessions
+        mine = poss[poss["team"] == team] if not poss.empty else poss
+        if poss_id is None and not mine.empty:
+            poss_id = int(mine.sort_values(["shot", "n_passes"], ascending=False).iloc[0]["poss_id"])
+        row = poss[poss["poss_id"] == poss_id] if not poss.empty else poss
+        if row.empty:
+            return _figure(th, (16, 9), f"{team} — Sequence", "No sequence selected")
+        s = row.iloc[0]
+        seq = sequence_events(md, int(poss_id))
+        fig = _figure(th, (17, 9.2), f"{team} — Sequence #{poss_id}",
+                      f"{s['start_min']:.0f}'  ·  started: {s['start_type']}  ·  {s['n_passes']} passes  ·  "
+                      f"{s['duration']:.0f} s  ·  ended: {s['end_reason']}  ·  furthest: {s['reach_third']}",
+                      "Numbers = order of actions · arrow = pass · dashed = carry · ■ regain · ◆ dribble · ★ shot · ✕ opponent wins it")
+        ax = fig.add_axes([0.02, 0.1, 0.64, 0.76])
+        pitch = _pitch(th)
+        pitch.draw(ax=ax)
+        steps = _draw_sequence(ax, pitch, th, seq, team, numbered=True)
+        _attack_arrow(ax, th)
+        _set_panel(fig, "Pitch", ax)
+        axl = fig.add_axes([0.68, 0.1, 0.3, 0.76])
+        axl.set_axis_off()
+        axl.add_patch(FancyBboxPatch((0, 0), 1, 1, boxstyle="round,pad=0,rounding_size=0.02", fc=th.panel, ec=th.grid,
+                                     transform=axl.transAxes))
+        axl.text(0.05, 0.97, "ACTIONS", fontsize=8.5, color=th.muted, fontweight="bold", va="top", transform=axl.transAxes)
+        lines = [(f"{i}", f"{int(e['minute'])}'{int(round((e['minute'] % 1) * 60)):02d}", _action_text(e, nm))
+                 for i, e in enumerate(steps, 1)]
+        opp = seq[seq["team"] != team]
+        if len(opp):
+            o = opp.iloc[0]
+            lines.append(("✕", f"{int(o['minute'])}'{int(round((o['minute'] % 1) * 60)):02d}",
+                          f"{o['team']} {o['etype'].replace('_', ' ')} — possession lost"))
+        step = min(0.06, 0.9 / max(len(lines), 1))
+        fs = 9 if step >= 0.045 else 7.5
+        for k, (n, tm, txt) in enumerate(lines):
+            y = 0.92 - k * step
+            axl.text(0.05, y, n, fontsize=fs, fontweight="bold", color=th.accent, va="top", transform=axl.transAxes)
+            axl.text(0.12, y, tm, fontsize=fs, color=th.muted, va="top", transform=axl.transAxes)
+            axl.text(0.27, y, txt[:52], fontsize=fs, color=th.text, va="top", transform=axl.transAxes)
+        _set_panel(fig, "Action list", axl)
+    return fig
+
+
+def sequence_table(md: MatchData, poss_id: int, names: dict | None = None) -> pd.DataFrame:
+    seq = sequence_events(md, int(poss_id))
+    if seq.empty:
+        return pd.DataFrame()
+    team = seq["poss_team"].iloc[0]
+    rows, n = [], 0
+    for _, e in seq.iterrows():
+        if e["team"] == team and e["etype"] == "receive":
+            continue
+        n += 1 if e["team"] == team else 0
+        rows.append({"#": str(n) if e["team"] == team else "✕", "Minute": f"{e['minute']:.2f}", "Team": e["team"],
+                     "Player": (f"#{e['player']} {(names or {}).get(e['player'], '')}".strip()
+                                if e["player"] and e["player"] != "0" else ""),
+                     "Action": _action_text(e, None) if e["team"] == team else f"{e['etype'].replace('_', ' ')} (wins the ball)",
+                     "Phase": e["phase"], "x": round(float(e["x"]), 1), "y": round(float(e["y"]), 1),
+                     "Labels": ", ".join(e["labels_raw"]) if isinstance(e.get("labels_raw"), tuple) else ""})
+    return pd.DataFrame(rows)
+
+
+# ======================================================================== pass maps by half
+def pass_map_halves(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, kind: str = "all",
+                    show_failed: bool = True, open_play_only: bool = False) -> plt.Figure:
+    label, fn = PASS_FILTERS.get(kind, PASS_FILTERS["all"])
+    th = theme
+    with plt.rc_context(_rc(th)):
+        fig = _figure(th, (17, 7.8), f"{team} — {label}: 1st half vs 2nd half", _subtitle(md, team, None, player),
+                      "End points inferred from the next tagged event")
+        pitch = _pitch(th)
+        for i, h in enumerate((1, 2)):
+            ax = fig.add_axes([0.015 + i * 0.495, 0.1, 0.475, 0.66])
+            pitch.draw(ax=ax)
+            p = _scope(md, team, h, player)
+            p = p[(p["etype"] == "pass") & p["end_x"].notna()]
+            if open_play_only:
+                p = p[p["open_play"]]
+            p = p[fn(p).fillna(False).astype(bool)]
+            ok, ko = p[p["outcome"] == 1], p[p["outcome"] != 1]
+            if show_failed and len(ko):
+                pitch.lines(ko["x"], ko["y"], ko["end_x"], ko["end_y"], comet=True, transparent=True, color=th.bad,
+                            lw=2, alpha_start=0.02, alpha_end=0.55, ax=ax, zorder=2)
+                pitch.scatter(ko["end_x"], ko["end_y"], s=20, marker="X", color=th.bad, alpha=0.75, ax=ax, zorder=3, linewidths=0)
+            if len(ok):
+                pitch.lines(ok["x"], ok["y"], ok["end_x"], ok["end_y"], comet=True, transparent=True, color=th.team,
+                            lw=2.5, alpha_start=0.03, alpha_end=0.95, ax=ax, zorder=4)
+                pitch.scatter(ok["end_x"], ok["end_y"], s=26, color=th.team, edgecolors=th.bg, linewidths=0.6, ax=ax, zorder=5)
+            if p.empty:
+                _empty(ax, th)
+            _attack_arrow(ax, th)
+            acc = M._pct(len(ok), len(p))
+            prog = int(ok["progressive"].sum())
+            fwd = M._pct((p["direction"] == "Forward").sum(), len(p))
+            ax.set_title(f"{'1ST' if h == 1 else '2ND'} HALF", loc="left", fontsize=12, fontweight="bold", color=th.text, pad=26)
+            ax.text(0, PITCH_W + 3.2, f"{len(p)} passes  ·  {_fmt(acc, 0, True)} accurate  ·  {prog} progressive  ·  "
+                    f"{_fmt(fwd, 0, True)} forward", fontsize=9.5, color=th.muted, va="bottom")
+            _set_panel(fig, f"{'1st' if h == 1 else '2nd'} half", ax)
+    return fig
+
+
+# ======================================================================== counter-press
+def counterpress_map(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK,
+                     window: float | None = None) -> plt.Figure:
+    from fap.matchlab import counterpress as CP
+    th = theme
+    window = float(window or md.cp_window)
+    with plt.rc_context(_rc(th)):
+        d = CP.analyse(md, team, window, half)
+        sm = CP.summary(d)
+        fig = _figure(th, (16.5, 9.6), f"{team} — Counter-press after losing the ball",
+                      _subtitle(md, team, half, None, f"first {window:.0f} s after each open-play loss"),
+                      f"Loss = where the opponent won the ball · pressed = {sm.get('press_source', 'Press tags')} within {window:.0f} s · "
+                      f"regained = open-play regain within {window:.0f} s")
+        ax = fig.add_axes([0.02, 0.36, 0.6, 0.5])
+        pitch = _pitch(th)
+        pitch.draw(ax=ax)
+        _bands(ax, th, md, alpha=0.03)
+        cols = {CP.CATEGORIES[0]: th.good, CP.CATEGORIES[1]: th.accent, CP.CATEGORIES[2]: th.team, CP.CATEGORIES[3]: th.bad}
+        if not d.empty:
+            rg = d[d["regained"] & d["regain_x"].notna()]
+            for _, r in rg.iterrows():
+                ax.annotate("", xy=(r["regain_x"], r["regain_y"]), xytext=(r["x"], r["y"]),
+                            arrowprops=dict(arrowstyle="-|>", color=th.text, lw=1, alpha=0.45), zorder=3)
+            for cat, col in cols.items():
+                g = d[d["category"] == cat]
+                if len(g):
+                    pitch.scatter(g["x"], g["y"], s=110, color=col, edgecolors=th.bg, linewidths=0.8, ax=ax, zorder=5,
+                                  marker="o" if "regained" in cat.lower() and "not" not in cat.lower() else "X")
+        else:
+            _empty(ax, th, "No open-play ball losses")
+        _attack_arrow(ax, th)
+        _legend(ax, th, [(f"{c} ({int((d['category'] == c).sum()) if not d.empty else 0})", col, "dot")
+                         for c, col in cols.items()], y=-0.07, ncol=2)
+        _set_panel(fig, "Pitch", ax)
+        items = [("Ball losses (open play)", _fmt(sm.get("losses", 0))),
+                 (f"Pressed within {window:.0f} s", f"{sm.get('pressed', 0)}  ({_fmt(sm.get('pressed_pct'), 0, True)})"),
+                 ("Avg. time to first press", _fmt(sm.get("avg_seconds_to_press"), 1) + " s"),
+                 (f"Regained within {window:.0f} s", f"{sm.get('regained', 0)}  ({_fmt(sm.get('regained_pct'), 0, True)})"),
+                 ("Regain rate · pressed / not", f"{_fmt(sm.get('regain_rate_when_pressed'), 0, True)} / {_fmt(sm.get('regain_rate_without_press'), 0, True)}"),
+                 ("Regains → shot", _fmt(sm.get("regain_to_shot", 0))),
+                 ("Opp. reached our final third", _fmt(sm.get("opp_reached_final_third", 0))),
+                 ("Opp. shots after our loss", _fmt(sm.get("opp_shots", 0)))]
+        kax = _kpis(fig, th, [0.65, 0.36, 0.32, 0.5], items, title="Counter-press", cols=2)
+        _set_panel(fig, "Summary", kax)
+        axh = fig.add_axes([0.05, 0.07, 0.4, 0.2])
+        if not d.empty and d["pressed"].any():
+            bins = np.arange(0, window + 1, 1)
+            pr = d[d["pressed"]]
+            a, _ = np.histogram(pr.loc[pr["regained"], "seconds_to_press"], bins=bins)
+            b, _ = np.histogram(pr.loc[~pr["regained"], "seconds_to_press"], bins=bins)
+            xs = bins[:-1] + 0.5
+            axh.bar(xs, a, width=0.8, color=th.good, label="then regained")
+            axh.bar(xs, b, width=0.8, bottom=a, color=th.accent, label="not regained")
+            axh.set_xticks(bins)
+            axh.legend(frameon=False, fontsize=8, labelcolor=th.muted)
+        axh.set_xlabel("seconds after the loss", color=th.muted, fontsize=8.5)
+        axh.set_title("TIME TO FIRST PRESS", loc="left", fontsize=9, color=th.muted, fontweight="bold")
+        for s_ in ("top", "right"):
+            axh.spines[s_].set_visible(False)
+        axh.tick_params(labelsize=8)
+        _set_panel(fig, "Time to press", axh)
+        axt = fig.add_axes([0.55, 0.07, 0.4, 0.2])
+        bt = CP.by_third(d)
+        if not bt.empty:
+            x = np.arange(len(bt))
+            axt.bar(x - 0.2, bt["pressed %"], width=0.38, color=th.accent, label="pressed %")
+            axt.bar(x + 0.2, bt["regained %"], width=0.38, color=th.good, label="regained %")
+            for xi, (_, r) in zip(x, bt.iterrows()):
+                axt.text(xi, max(r["pressed %"], r["regained %"]) + 3, f"{int(r['losses'])} losses", ha="center",
+                         fontsize=8, color=th.muted)
+            axt.set_xticks(x, [t.replace(" third", "") for t in bt.index], fontsize=9)
+            axt.set_ylim(0, 110)
+            axt.legend(frameon=False, fontsize=8, labelcolor=th.muted, loc="upper right")
+        axt.set_title("BY ZONE OF THE LOSS", loc="left", fontsize=9, color=th.muted, fontweight="bold")
+        for s_ in ("top", "right"):
+            axt.spines[s_].set_visible(False)
+        axt.tick_params(labelsize=8)
+        _set_panel(fig, "By zone", axt)
+    return fig
+
+
+# ======================================================================== panels (download one part of a chart)
+def _set_panel(fig, name: str, *axes) -> None:
+    panels = getattr(fig, "_ml_panels", None)
+    if panels is None:
+        panels = {}
+        fig._ml_panels = panels
+    panels.setdefault(name, []).extend(a for a in axes if a is not None)
+
+
+# Charts built before panels existed: name their axes by creation order.
+_PANEL_INDEX = {
+    "pass_map": {"Pitch": [0], "Summary": [1], "Top players": [2]},
+    "progression": {"Pitch": [0], "Summary": [1], "Top progressors": [2]},
+    "pass_profile": {"Direction rose": [0], "Pass type": [1], "Direction": [2], "Length": [3], "Height": [4], "Line broken": [5]},
+    "pass_sonars": {"Pitch": [0, 1]},
+    "pass_network": {"Pitch": [0], "Top combinations": [1]},
+    "heatmap": {"Pitch": [0], "Share": [1]},
+    "entries": {"Pitch": [0], "Entries by channel": [1], "Totals": [2]},
+    "crosses": {"Pitch": [0], "Summary": [1], "By player": [2]},
+    "shots": {"Pitch": [0], "Summary": [1]},
+    "defensive": {"Pitch": [0], "Summary": [1]},
+    "losses": {"Pitch": [0], "By zone": [1]},
+    "phases_in": {"Pitch": [0], "Phase cards": [1, 2, 3], "Possession funnel": [4], "Build-up outcomes": [5]},
+    "phases_out": {"Pitch": [0], "Phase cards": [1, 2, 3], "Defensive control": [4], "Attacking transition": [5]},
+    "phase_flow": {"Phase matrix": [0], "How possessions started": [1], "How possessions ended": [2]},
+    "momentum": {"Final-third pressure": [0], "Passing rhythm": [1]},
+    "sequences": {"Passes per sequence": [0], "Furthest third": [1], "Most involved": [2], "Summary": [3]},
+    "player": {"Passes": [0], "Touches": [1], "Stats": [2]},
+}
+
+
+def panels_of(fig) -> list[str]:
+    return list(getattr(fig, "_ml_panels", {}) or {})
+
+
+def panel_png(fig, name: str, dpi: int = 300) -> bytes:
+    """PNG of ONE part of a dashboard chart, with its own title — the rest of the figure hidden."""
+    import io
+    from matplotlib.transforms import Bbox
+    axes = fig._ml_panels[name]
+    fig.canvas.draw()
+    r = fig.canvas.get_renderer()
+    keep = set(axes)
+    for a in fig.axes:
+        a.set_visible(a in keep)
+    for art in list(fig.texts) + list(fig.artists) + list(fig.lines) + list(fig.patches):
+        art.set_visible(False)
+    bb = Bbox.union([a.get_tightbbox(r) for a in axes])
+    W, H = fig.bbox.width, fig.bbox.height
+    title = getattr(fig, "_ml_title", "")
+    t1 = fig.text(bb.x0 / W, (bb.y1 + 0.42 * fig.dpi) / H, f"{title}  —  {name}" if title else name, ha="left", va="bottom",
+                  fontsize=14, fontweight="bold", color=getattr(fig, "_ml_text", "#000"))
+    t2 = fig.text(bb.x0 / W, (bb.y1 + 0.14 * fig.dpi) / H, getattr(fig, "_ml_subtitle", ""), ha="left", va="bottom",
+                  fontsize=9, color=getattr(fig, "_ml_muted", "#666"))
+    fig.canvas.draw()
+    full = Bbox.union([bb, t1.get_window_extent(r), t2.get_window_extent(r)])
+    inches = full.transformed(fig.dpi_scale_trans.inverted()).padded(0.2)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, facecolor=fig.get_facecolor(), bbox_inches=inches)
+    plt.close(fig)
+    return buf.getvalue()
+
+
 # ======================================================================== catalogue
 @dataclass(frozen=True)
 class ChartSpec:
@@ -1253,6 +1575,7 @@ CHARTS: list[ChartSpec] = [
     ChartSpec("comparison", "Match statistics", "Overview", team_comparison),
     ChartSpec("momentum", "Match momentum", "Overview", momentum),
     ChartSpec("pass_map", "Pass map", "Passing", pass_map),
+    ChartSpec("pass_map_halves", "Pass map · 1st vs 2nd half", "Passing", pass_map_halves),
     ChartSpec("pass_profile", "Pass types & directions", "Passing", pass_profile),
     ChartSpec("pass_sonars", "Pass sonars by zone", "Passing", pass_sonars),
     ChartSpec("pass_flow", "Pass flow", "Passing", pass_flow),
@@ -1266,7 +1589,9 @@ CHARTS: list[ChartSpec] = [
     ChartSpec("phases_out", "Phases · out of possession", "Phases", phases_out_of_possession),
     ChartSpec("phase_flow", "Possession phase flow", "Phases", phase_flow),
     ChartSpec("buildup", "Build-up sequences", "Phases", buildup_sequences),
+    ChartSpec("sequence", "Sequence explorer", "Phases", sequence_map),
     ChartSpec("sequences", "Possession sequences", "Phases", sequences),
+    ChartSpec("counterpress", "Counter-press", "Defending", counterpress_map),
     ChartSpec("defensive", "Defensive actions", "Defending", defensive_map),
     ChartSpec("losses", "Ball losses & regains", "Defending", losses_recoveries),
     ChartSpec("heatmap", "Activity heat map", "Territory", touch_heatmap),
@@ -1276,11 +1601,19 @@ CHART_BY_KEY = {c.key: c for c in CHARTS}
 
 
 def render(key: str, md: MatchData, team: str, **kw) -> plt.Figure:
-    return CHART_BY_KEY[key].fn(md, team, **kw)
+    fig = CHART_BY_KEY[key].fn(md, team, **kw)
+    if not getattr(fig, "_ml_panels", None):
+        for name, idx in _PANEL_INDEX.get(key, {}).items():
+            axes = [fig.axes[i] for i in idx if i < len(fig.axes) and fig.axes[i].get_visible()]
+            if axes and any(a.has_data() or a.texts or a.patches or a.collections for a in axes):
+                _set_panel(fig, name, *axes)
+    return fig
 
 
-def to_png(fig: plt.Figure, dpi: int = 150) -> bytes:
+def to_png(fig: plt.Figure, dpi: int = 150, panel: str | None = None) -> bytes:
     import io
+    if panel:
+        return panel_png(fig, panel, dpi)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, facecolor=fig.get_facecolor(), bbox_inches="tight", pad_inches=0.15)
     plt.close(fig)

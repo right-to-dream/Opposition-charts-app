@@ -11,7 +11,7 @@ Out of possession (where the defensive action happens, in the defending team's f
   * High press    x ≥ 70 m   (in the opponent's defensive third)
   * Mid block     35–70 m
   * Low block     x < 35 m   (own third)
-  * Counter-press — a defensive action within ``COUNTERPRESS_S`` seconds of losing the ball (or
+  * Counter-press — a defensive action within ``md.cp_window`` (6–8 s) seconds of losing the ball (or
     tagged "Counter Press").
 
 Thresholds follow ``md.thirds`` so the UI can move the lines.
@@ -57,7 +57,7 @@ def tag_phases(md: "MatchData") -> None:
     st = ev["poss_id"].map(start_t)
     ev["transition"] = on_ball & ev["poss_id"].map(regain.to_dict()).eq(True) & ((ev["t"] - st) <= TRANSITION_S)
     prev_team = ev["poss_id"].map(lambda p: team_of.get(p - 1, ""))
-    lost_recently = is_def & ev["team"].ne(ev["poss_team"]) & prev_team.eq(ev["team"]) & ((ev["t"] - st) <= COUNTERPRESS_S)
+    lost_recently = is_def & ev["team"].ne(ev["poss_team"]) & prev_team.eq(ev["team"]) & ((ev["t"] - st) <= md.cp_window)
     ev["counter_press"] = lost_recently | (is_def & ev["lab_counter_press"])
 
 
@@ -175,18 +175,10 @@ def defending_kpis(md: "MatchData", team: str, half: int | None = None) -> dict:
     d = me[me["etype"].isin(DEF_ACTIONS)]
     ppda_den = me[ppda_mask(me)]
     ppda_num = op_pass[op_pass["x"] < 0.6 * PITCH_L]
-    poss = md.possessions
-    lost = 0
-    regained5 = 0
-    if not poss.empty:
-        pp = poss if half is None else poss[poss["half"] == half]
-        pp = pp.sort_values("poss_id").reset_index(drop=True)
-        for i in range(len(pp) - 1):
-            if pp.at[i, "team"] == team and pp.at[i, "end_reason"] == "Lost":
-                lost += 1
-                if pp.at[i + 1, "team"] == opp and pp.at[i + 1, "duration"] <= COUNTERPRESS_S \
-                        and i + 2 < len(pp) and pp.at[i + 2, "team"] == team:
-                    regained5 += 1
+    from fap.matchlab import counterpress
+    cp = counterpress.analyse(md, team, md.cp_window, half)
+    lost = len(cp)
+    regained5 = int(cp["regained"].sum()) if lost else 0
     opp_box = ev[(ev["team"] == opp) & (ev["etype"].isin(["pass", "carry"])) & ev["box_entry"] & (ev["outcome"] == 1)]
     return {
         "PPDA": len(ppda_num) / len(ppda_den) if len(ppda_den) else np.nan,
@@ -194,7 +186,7 @@ def defending_kpis(md: "MatchData", team: str, half: int | None = None) -> dict:
         "Def. action height (m)": float(d["x"].mean()) if len(d) else np.nan,
         "High regains": int(((me["etype"].isin(["recovery"]) | (me["etype"].isin(["interception", "tackle"]) & me["labels"].map(lambda l: "won" in l))) & (me["x"] >= md.thirds[1])).sum()),
         "Counter-press actions": int(me["counter_press"].sum()),
-        "Losses": lost, "Regained ≤5s": regained5,
+        "Losses": lost, "Regained in window": regained5,
         "Opp. box entries allowed": len(opp_box),
         "Opp. shots allowed": int(((ev["team"] == opp) & (ev["etype"] == "shot")).sum()),
         "Opp. xG allowed": float(ev[(ev["team"] == opp)]["xg"].sum()),

@@ -49,8 +49,10 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "y": ("pos_y_meters", "y", "pos_y", "start_y", "location_y"),
     "x2": ("pos_target_x_meters", "end_x", "x2", "target_x", "pass_end_x"),
     "y2": ("pos_target_y_meters", "end_y", "y2", "target_y", "pass_end_y"),
-    "clock": ("begin2", "match_clock", "game_time", "clock"),
-    "video": ("begin", "start", "video_time", "timestamp"),
+    "clock": ("begin2", "begin_match", "match_begin_duration", "match_clock", "game_time", "clock"),
+    "clock_end": ("end2", "end_match", "match_end_duration"),
+    "video": ("begin", "video_begin_duration", "start", "video_time", "timestamp"),
+    "video_end": ("end", "video_end_duration"),
     "half": ("half", "period", "half_number"),
 }
 
@@ -123,10 +125,58 @@ def parse_clock(value: Any) -> float:
     return base + secs
 
 
+# Tagging spellings -> one canonical label vocabulary (so "Successfull" / "Successful",
+# "Under Press" / "Under Pressure" etc. are the same flag everywhere, incl. the label columns).
+LABEL_SYNONYMS = {
+    "successfull": "successful", "succesful": "successful", "success": "successful",
+    "unsuccessfull": "unsuccessful", "unsuccesful": "unsuccessful", "failure": "unsuccessful",
+    "fail": "unsuccessful", "failed": "unsuccessful",
+    "under press": "under pressure", "throughball": "through ball", "cut back": "cutback",
+    "line breaking": "line break", "1st time shot": "first time shot", "first time": "first time shot",
+    "cleareance": "clearance", "coverd offside": "covered offside", "foul commited": "foul committed",
+    "right foor": "right foot", "counter-press": "counter press", "fk": "free kick", "gk": "goal kick",
+    "ko": "kick off", "kickoff": "kick off", "throw": "throw in", "throw-in": "throw in",
+}
+
+
+def canon_label(token: str) -> str:
+    t = re.sub(r"\s+", " ", str(token).strip().lower())
+    return LABEL_SYNONYMS.get(t, t)
+
+
 def split_labels(value: Any) -> tuple[str, ...]:
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return ()
-    return tuple(t.strip().lower() for t in str(value).split(",") if t.strip())
+    out = [canon_label(t) for t in str(value).split(",") if t.strip()]
+    return tuple(dict.fromkeys(t for t in out if t and t != "nan"))
+
+
+def tag_qualifiers(tag: str) -> tuple[str, ...]:
+    """Qualifiers carried by the TAG itself in the outcome-in-tag dialect
+    ("Succ Pass", "Fail Cross", "Shot On Target", "Goal", "Cross Saved"...)."""
+    t = re.sub(r"\s+", " ", str(tag).strip().lower())
+    q: list[str] = []
+    if t.startswith(("succ ", "successful ")):
+        q.append("successful")
+    if t.startswith(("fail ", "unsucc", "failed ")):
+        q.append("unsuccessful")
+    if "cross" in t:
+        q.append("cross")
+    if t == "cross saved":
+        q += ["unsuccessful", "saved by goalkeeper"]
+    if "on target" in t:
+        q.append("on target")
+    if "off target" in t:
+        q.append("off target")
+    if t.startswith("shot") and "block" in t:
+        q.append("blocked")
+    if t == "goal":
+        q.append("goal")
+    if "key pass" in t:
+        q.append("key pass")
+    if "assist" in t:
+        q.append("assist")
+    return tuple(q)
 
 
 # Event-type normalisation for the tagging vocabulary (specific words first, then the shared
@@ -148,21 +198,46 @@ _SPECIFIC = {
 
 def normalise_etype(tag: Any) -> str:
     t = str(tag).strip().lower() if tag is not None and tag == tag else ""
+    t = re.sub(r"\s+", " ", re.sub(r"^\d+(st|nd)?\s*", "", t))          # "1 Half Start" -> "half start"
     if not t:
         return ""
     if t in _SPECIFIC:
         return _SPECIFIC[t]
+    if t.startswith("error"):                                             # "Error Led To Shot"
+        return "error"
+    if t == "penalty won":
+        return "penalty_won"
+    if t == "cross saved":
+        return "pass"
     et = event_type_for(t)
     return {"pressure": "press", "cross": "pass", "dispossessed": "ball_lost"}.get(et, et)
 
 
-_SUCC = ("successfull", "successful", "success", "succ", "won", "complete", "completed", "goal")
-_FAIL = ("unsuccessfull", "unsuccessful", "unsucc", "fail", "failed", "lost", "miss")
+_SUCC = ("successful", "won", "complete", "completed", "goal")
+_FAIL = ("unsuccessful", "lost", "miss", "not won")
+
+
+def parse_player(value: Any) -> str:
+    """Shirt number as text. '0' = unknown player; '0, 20' -> '20' (first real number)."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return ""
+    nums = []
+    for part in str(value).split(","):
+        part = part.strip()
+        try:
+            nums.append(str(int(float(part))))
+        except ValueError:
+            if part and part.lower() != "nan":
+                nums.append(part)
+    real = [n for n in nums if n != "0"]
+    return real[0] if real else (nums[0] if nums else "")
 
 
 def outcome_from(labels: tuple[str, ...], tag: str) -> float:
     """1.0 success / 0.0 failure / NaN unknown — from labels first, then tag wording."""
     words = set(labels)
+    if (words & set(_FAIL)) and (words & set(_SUCC)) and not (words & {"won", "lost"}):
+        return np.nan                     # contradictory tagging -> resolved from the next event
     if words & set(_FAIL):
         return 0.0
     if words & set(_SUCC):
@@ -185,6 +260,16 @@ class MatchData:
     notes: list[str] = field(default_factory=list)
     possessions: pd.DataFrame = field(default_factory=pd.DataFrame)
     thirds: tuple = (35.0, 70.0)
+    cp_window: float = 8.0                                              # counter-press window (s)
+    raw: pd.DataFrame = field(default_factory=pd.DataFrame, repr=False)   # the file as read
+
+    @property
+    def our_team(self) -> str:
+        """The analysed club (files are always Masar's): first team whose name contains 'masar'."""
+        for t in self.teams:
+            if "masar" in t.lower():
+                return t
+        return self.teams[0] if self.teams else ""
 
     # convenience views -------------------------------------------------------
     def team_events(self, team: str) -> pd.DataFrame:
@@ -213,7 +298,7 @@ _ON_BALL = {"pass", "shot", "dribble", "carry"}
 
 
 def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
-               thirds: tuple[float, float] = (35.0, 70.0)) -> MatchData:
+               thirds: tuple[float, float] = (35.0, 70.0), cp_window: float = 8.0) -> MatchData:
     """Read + normalise a tagged export. ``mirror_y`` flips left/right flanks for tagging tools
     that write ``y`` upward instead of image-downward; ``thirds`` are the phase lines (metres)."""
     raw = read_table(src, name)
@@ -224,19 +309,18 @@ def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
                              "(tag_name / pos_x_meters / pos_y_meters).")
     notes: list[str] = []
     ev = pd.DataFrame(index=raw.index)
+    ev["event_id"] = np.arange(1, len(raw) + 1)
     ev["tag"] = raw[cols["tag"]].astype(str).str.strip()
     ev["etype"] = ev["tag"].map(normalise_etype)
-    ev["labels"] = raw[cols["labels"]].map(split_labels) if "labels" in cols else [()] * len(raw)
+    ev["labels_raw"] = raw[cols["labels"]].map(split_labels) if "labels" in cols else [()] * len(raw)
+    ev["labels"] = [tuple(dict.fromkeys(lr + tag_qualifiers(tg))) for lr, tg in zip(ev["labels_raw"], ev["tag"])]
+    for k in ("video", "video_end", "clock", "clock_end"):
+        ev["txt_" + k] = raw[cols[k]].map(lambda v: "" if v is None or v != v else str(v)) if k in cols else ""
     ev["team"] = raw[cols["team"]].fillna("").astype(str).str.strip() if "team" in cols else ""
-    if "player" in cols:
-        pl = raw[cols["player"]]
-        num = pd.to_numeric(pl, errors="coerce")
-        ev["player"] = np.where(num.notna(), num.fillna(-1).astype(int).astype(str), pl.fillna("").astype(str))
-        ev.loc[ev["player"].isin(["-1", "nan"]), "player"] = ""
-    else:
-        ev["player"] = ""
+    ev["player"] = raw[cols["player"]].map(parse_player) if "player" in cols else ""
     ev["raw_x"] = pd.to_numeric(raw[cols["x"]], errors="coerce")
     ev["raw_y"] = pd.to_numeric(raw[cols["y"]], errors="coerce")
+    ev["src_x"], ev["src_y"] = ev["raw_x"], ev["raw_y"]                 # exactly as in the file
     ev["raw_x2"] = pd.to_numeric(raw[cols["x2"]], errors="coerce") if "x2" in cols else np.nan
     ev["raw_y2"] = pd.to_numeric(raw[cols["y2"]], errors="coerce") if "y2" in cols else np.nan
     if mirror_y:
@@ -275,6 +359,8 @@ def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
 
     # pass end points (raw frame, before orientation) -------------------------
     ev = _fix_late_receives(ev)
+    if ev.attrs.get("late_receives_fixed"):
+        notes.append(f"Re-ordered {ev.attrs['late_receives_fixed']} Receive events tagged just after the same player's next action.")
     _infer_pass_ends(ev)
 
     # orientation per (team, half) ---------------------------------------------
@@ -299,7 +385,8 @@ def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
 
     ev = _add_carries(ev)
     md = MatchData(events=ev, teams=teams, source_name=name, orientation=orient, notes=notes,
-                   thirds=(float(thirds[0]), float(thirds[1])))
+                   thirds=(float(thirds[0]), float(thirds[1])), raw=raw,
+                   cp_window=float(cp_window))
     from fap.matchlab import metrics   # local import: metrics depends on loader
     metrics.enrich(md)
     return md
@@ -331,16 +418,20 @@ def _fix_late_receives(ev: pd.DataFrame, max_lag: float = 2.5) -> pd.DataFrame:
     chain reads receive → action (needed for pass end points and carries)."""
     et, tm, pl, t = (ev[c].tolist() for c in ("etype", "team", "player", "t"))
     order = list(range(len(ev)))
+    swaps = 0
     i = 0
     while i < len(order) - 1:
         a, b = order[i], order[i + 1]
         if (et[b] == "receive" and et[a] in ("pass", "shot", "dribble", "carry") and _known(pl[a]) and pl[a] == pl[b]
                 and tm[a] == tm[b] and 0 <= t[b] - t[a] <= max_lag):
             order[i], order[i + 1] = b, a
+            swaps += 1
             i = max(i - 1, 0)
             continue
         i += 1
-    return ev.iloc[order].reset_index(drop=True)
+    out = ev.iloc[order].reset_index(drop=True)
+    out.attrs["late_receives_fixed"] = swaps
+    return out
 
 
 def _infer_pass_ends(ev: pd.DataFrame, horizon_rows: int = 7, horizon_s: float = 12.0) -> None:
@@ -430,7 +521,7 @@ def _add_carries(ev: pd.DataFrame, min_dist: float = 5.0, max_gap: float = 15.0)
                     r = ev.iloc[i].to_dict()
                     r.update(etype="carry", tag="Carry (derived)", x=x[i], y=y[i], end_x=x[j], end_y=y[j],
                              end_source="derived", outcome=1.0, t=t[i] + 0.01, derived=True,
-                             labels=(), receiver="")
+                             labels=(), labels_raw=(), receiver="", event_id=np.nan)
                     rows.append(r)
             break
     ev = ev.copy()
