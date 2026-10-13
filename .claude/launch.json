@@ -24,6 +24,15 @@
                       "--server.headless", "true", "--server.port", "8522",
                       "--browser.gatherUsageStats", "false"],
       "port": 8522
+    },
+    {
+      "name": "ml",
+      "runtimeExecutable": "C:\\Users\\Essam\\OneDrive\\Desktop\\python\\pythonw.exe",
+      "runtimeArgs": ["-m", "streamlit", "run",
+                      "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\952493cb-6a5c-44b4-b4ec-d1a30bee41a5\\scratchpad\\ml_harness.py",
+                      "--server.headless", "true", "--server.port", "8523",
+                      "--browser.gatherUsageStats", "false"],
+      "port": 8523
     }
   ]
 }
