@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -184,12 +185,42 @@ def squad_from_table(df: pd.DataFrame, source: str = "uploaded squad") -> Squad:
     return Squad(by, amb, source, short, role)
 
 
+# ------------------------------------------------------------------ bundled defaults
+_DATA = Path(__file__).with_name("data")
+
+
+def bundled_tables() -> dict:
+    """The club's reference tables shipped with the app (EPL 2A teams + matches, Masar squad 26/27).
+    Used whenever nothing newer has been uploaded."""
+    out = {}
+    for k, f in (("teams", "teams.csv"), ("matches", "matches.csv"), ("squad", "masar_squad.csv")):
+        fp = _DATA / f
+        out[k] = pd.read_csv(fp, dtype=str, keep_default_na=False).replace({"": None}) if fp.exists() else None
+    return out
+
+
 # ------------------------------------------------------------------ bundle
 @dataclass
 class Reference:
     teams: pd.DataFrame | None = None
     matches: pd.DataFrame | None = None
     squad: Squad = field(default_factory=default_squad)
+
+    @classmethod
+    def bundled(cls) -> "Reference":
+        t = bundled_tables()
+        squad = default_squad()
+        if isinstance(t.get("squad"), pd.DataFrame):
+            try:
+                squad = squad_from_table(t["squad"], "Masar Squad Details 26-27 (built-in)")
+            except ValueError:
+                pass
+        return cls(t.get("teams"), t.get("matches"), squad)
+
+    def auto_match_id(self, md) -> str:
+        """The match_id when exactly one row of the match table has these two teams."""
+        m = self.resolve(md)["matches"]
+        return str(m["match_id"].iloc[0]) if isinstance(m, pd.DataFrame) and len(m) == 1 else ""
 
     def resolve(self, md) -> dict:
         """IDs for one loaded match: per team {id, official, method} + candidate match rows."""

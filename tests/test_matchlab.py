@@ -290,3 +290,16 @@ def test_panels_and_halves(proxy):
     fig = CH.render("pass_profile", proxy, "Masar", theme=CH.LIGHT)
     assert "Direction rose" in CH.panels_of(fig)
     assert CH.to_png(fig, dpi=40, panel="Direction rose")[:4] == b"\x89PNG"
+
+
+def test_bundled_reference_fills_ids_without_uploads(proxy):
+    from fap.matchlab import export as X
+    from fap.matchlab.reference import Reference
+    ref = Reference.bundled()
+    assert len(ref.squad.by_shirt) >= 31 and ref.squad.lookup("24")[0]
+    assert ref.teams is not None and ref.matches is not None
+    e = X.build_events(proxy)                       # no reference passed -> built-in tables
+    m = e[e["team"] == "FC Masar Men"]
+    assert m["team_id"].eq("25bd1277-b0e7-5e6c-b692-1716a60099f5").all()
+    known = m["player_number"].isin(list(ref.squad.by_shirt))
+    assert m.loc[known, "player_id"].ne("").all()

@@ -85,14 +85,33 @@ def _save_ref(shell, state: dict) -> str:
 
 
 def _reference(state: dict):
-    from fap.matchlab.reference import Reference, default_squad, squad_from_table
-    squad = default_squad()
+    """Uploaded tables win; anything not uploaded falls back to the built-in club tables."""
+    from fap.matchlab.reference import Reference, squad_from_table
+    base = Reference.bundled()
+    squad = base.squad
     if isinstance(state.get("squad"), pd.DataFrame):
         try:
             squad = squad_from_table(state["squad"], "uploaded squad file")
         except ValueError:
             pass
-    return Reference(state.get("teams"), state.get("matches"), squad)
+    teams = state["teams"] if isinstance(state.get("teams"), pd.DataFrame) else base.teams
+    matches = state["matches"] if isinstance(state.get("matches"), pd.DataFrame) else base.matches
+    return Reference(teams, matches, squad)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _workbook(sig: str, ref_sig: str, match_id: str, _md, _ref) -> bytes:
+    from fap.matchlab import export as X
+    return X.build_workbook(_md, _ref, match_id)
+
+
+def _ref_sig(state: dict) -> str:
+    parts = []
+    for k in ("teams", "matches", "squad"):
+        v = state.get(k)
+        parts.append(hashlib.sha1(pd.util.hash_pandas_object(v.astype(str), index=False).values.tobytes()).hexdigest()[:10]
+                     if isinstance(v, pd.DataFrame) else "-")
+    return "|".join(parts)
 
 
 # ---------------------------------------------------------------- persistence
@@ -190,8 +209,21 @@ class MatchLabPage(Page):
         self._kpis(md, team, half)
         aud = _audit(sig, md)
         n = aud["Status"].value_counts().to_dict() if not aud.empty else {}
-        st.caption(f"Data check against the raw file: {n.get('PASS', 0)} passed · {n.get('WARN', 0)} warnings · "
-                   f"{n.get('FAIL', 0)} failed — details in the 'Data & export' tab.")
+        st.session_state["_ml_sig"] = sig
+        cc = st.columns([3, 1.2])
+        cc[0].caption(f"Data check against the raw file: {n.get('PASS', 0)} passed · {n.get('WARN', 0)} warnings · "
+                      f"{n.get('FAIL', 0)} failed — details in the 'Data & export' tab.")
+        state = _ref_state(shell)
+        ref_top = _reference(state)
+        mid = st.session_state.get("_ml_match_id") or ref_top.auto_match_id(md)
+        base_name = f["name"].rsplit(".", 1)[0]
+        try:
+            wb_top = _workbook(sig, _ref_sig(state), mid, md, ref_top)
+            cc[1].download_button("Download enriched Excel", wb_top, file_name=f"{base_name}_enriched.xlsx",
+                                  mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                  key="ml_dl_xlsx_top", type="primary", use_container_width=True)
+        except Exception as exc:  # pragma: no cover - surfaced in the UI
+            cc[1].caption(f"Excel export unavailable: {exc}")
         ctx = dict(sig=sig, md=md, team=team, half=half, player=player, theme=theme, dpi=int(dpi), names=names)
 
         tabs = st.tabs(["Overview", "Passing", "Progression & attack", "Phases of play", "Defending",
@@ -459,8 +491,8 @@ class MatchLabPage(Page):
                     except Exception as exc:
                         col.error(f"Could not read: {exc}")
             have = state.get(k)
-            col.caption(f"Loaded: {len(have)} rows" if isinstance(have, pd.DataFrame)
-                        else ("Using the built-in Masar squad 2026/27" if k == "squad" else "Not loaded"))
+            col.caption(f"Uploaded: {len(have)} rows" if isinstance(have, pd.DataFrame)
+                        else "Using the built-in club file")
         if changed and can_edit:
             st.toast(_save_ref(shell, state))
         ref = _reference(state)
@@ -486,14 +518,12 @@ class MatchLabPage(Page):
                    "possession, xG ...) + one column per label, with team / match / player IDs. "
                    "Extra sheets: carries, possessions, players, team summary, data check.")
         base = (st.session_state.get(ML_FILE) or {}).get("name", "match").rsplit(".", 1)[0]
-        if st.button("Build Excel file", key="ml_build_xlsx", type="primary"):
-            with st.spinner("Building..."):
-                st.session_state["_ml_xlsx"] = (base, match_id, X.build_workbook(md, ref, match_id))
-        got = st.session_state.get("_ml_xlsx")
-        if got and got[0] == base and got[1] == match_id:
-            st.download_button("Download Excel (.xlsx)", got[2], file_name=f"{base}_enriched.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               key="ml_dl_xlsx")
+        st.session_state["_ml_match_id"] = match_id
+        with st.spinner("Preparing the Excel file..."):
+            wb = _workbook(st.session_state.get("_ml_sig", ""), _ref_sig(state), match_id, md, ref)
+        st.download_button("Download Excel (.xlsx)", wb, file_name=f"{base}_enriched.xlsx", type="primary",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           key="ml_dl_xlsx")
         ev_csv = X.build_events(md, ref, match_id)
         st.download_button("Download events only (.csv)", ev_csv.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"{base}_events.csv", mime="text/csv", key="ml_dl_evcsv")

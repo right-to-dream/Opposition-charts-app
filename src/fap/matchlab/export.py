@@ -116,7 +116,8 @@ def label_column(name: str) -> str:
 
 
 def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = "") -> pd.DataFrame:
-    ref = ref or Reference()
+    ref = ref or Reference.bundled()
+    match_id = match_id or ref.auto_match_id(md)
     ev = md.events
     real = ev[~ev["derived"].astype(bool)].sort_values("event_id").copy()
     res = ref.resolve(md)
@@ -264,7 +265,8 @@ def unmatched_shirts(md: "MatchData", ref: Reference) -> list[str]:
 
 
 def build_workbook(md: "MatchData", ref: Reference | None = None, match_id: str = "") -> bytes:
-    ref = ref or Reference()
+    ref = ref or Reference.bundled()
+    match_id = match_id or ref.auto_match_id(md)
     events = build_events(md, ref, match_id)
     res = ref.resolve(md)
     our = md.our_team

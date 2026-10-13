@@ -1,0 +1,32 @@
+shirt_number,player_app_id,first_name,middle_name,last_name,short_name,nickname,birth_date,foot,gender,height,role_name,role_code,country_of_birth,season,status
+1,2a5c7210-e415-53ff-bac6-70db0fb63896,Ibrahim,,Zayed,I.Zayed,,2002-04-05 00:00:00,R,Male,184,GoalKeeper,GK,Egypt,2026/2027,active
+26,4c47e2dd-555c-542e-913f-646f088dca4f,Ahmed,,Haggag,A.Haggag,,1994-11-01 00:00:00,R,Male,185,GoalKeeper,GK,Egypt,2026/2027,active
+16,1a22d871-c996-5399-8f84-08331c0c3057,Ahmed,,Mostafa,A.Mostafa,,2002-12-27 00:00:00,R,Male,182,GoalKeeper,GK,Egypt,2026/2027,active
+24,0350843a-cf0f-5081-95b3-f8ea3dfb4324,Hamdy,Yasser,Moussa,H.Moussa,,2002-01-25 00:00:00,R,Male,195,Defender,DEF,Egypt,2026/2027,active
+2,5e37f721-3ee2-5892-a3de-896a9def8dec,Abdelrahman,,Youssef,A.Youssef,Boudy,1997-12-29 00:00:00,L,Male,-,Defender,DEF,Egypt,2026/2027,active
+3,be29993c-7ff8-54b0-aeb6-c4a2b44f80c0,Ahmed,,Abdelrahman,A.Abdelrahman,,-,-,Male,-,Defender,DEF,Egypt,2026/2027,active
+15,ee8ee58b-a46e-5d57-96f3-52dc41b821af,Adam,,Babajide,A.Babajide,,2006-05-17 00:00:00,-,Male,-,Defender,DEF,Nigeria,2026/2027,active
+28,5a3ceb33-7c99-504d-82b4-272ef08b6c68,Ahmed,Sayed,Talha,A.Talha,,2000-12-10 00:00:00,R,Male,182,Defender,DEF,Egypt,2026/2027,active
+5,787a721d-1a77-5b8f-883c-4af9bef4cb2c,Mohamed,,Ataq,M.Ataq,,1996-05-16 00:00:00,L,Male,179,Defender,DEF,Egypt,2026/2027,active
+6,4b98e625-746b-51ec-b2e4-c8180b3f1c1a,Abdelrahman,Abdelmawgood,Fathalla,A.Fathalla,,1997-03-08 00:00:00,R,Male,176,Defender,DEF,Egypt,2026/2027,active
+20,f7e3e6d0-ce99-52dd-9fcf-b971f2178069,Abdul-Aziz,,Coulibaly,A.Coulibaly,,2006-02-03 00:00:00,R,Male,-,Defender,DEF,Ivory Coast,2026/2027,active
+13,fc46b6a1-b9e1-53b4-94be-a45d2f833436,Ahmed,,Shaaban,A.Shaaban,,2000-04-25 00:00:00,L,Male,173,Defender,DEF,Egypt,2026/2027,active
+33,2d61bb9f-aee0-5b87-92c1-7f211dde0354,Mohamed,,Kamel,M.Kalousha,Kalousha,2003-02-15 00:00:00,R,Male,174,Midfielder,MID,Egypt,2026/2027,active
+14,c9d4fdb0-afb3-54ce-b9b9-32323c61eb8f,Ahmed,,Essam,A.Chico,Chico,1997-11-04 00:00:00,R,Male,165,Midfielder,MID,Egypt,2026/2027,active
+8,4d7035b8-3922-5fc1-a0e1-7822969d69df,Ahmed,,Ibrahim,A.Mika,Mika,1997-12-13 00:00:00,R,Male,178,Midfielder,MID,Egypt,2026/2027,active
+17,f34e4408-ca8a-5f89-8119-45a97d3dc686,Mohamed,,Farhan,M.Farhan,,2001-01-17 00:00:00,R,Male,180,Midfielder,MID,Egypt,2026/2027,active
+41,fb5bda3c-099c-547a-93fa-a1efe684d9ff,Zeyad,,Yasser,Z.Yasser,,2008-08-18 00:00:00,R,Male,176,Midfielder,MID,Egypt,2026/2027,active
+74,23e72d05-0163-54d3-acd4-7120b8208a3a,Zeyad,,Shadad,Z.Shadad,,-,-,Male,-,Midfielder,MID,Egypt,2026/2027,active
+12,740127cc-3f6c-5e48-b405-3ab656061579,Mostafa,Osman,Anany,M.Anany,,-,-,Male,-,Midfielder,MID,Egypt,2026/2027,active
+18,d899c523-efe8-5124-aa9a-ed3e4b97548e,Islam,,Marzouk,I.Marzouk,,-,-,Male,-,Midfielder,MID,Egypt,2026/2027,active
+22,a41431d7-1805-53ad-ae71-ed1829e4408b,Samir,,Essam,S.Belia,Belia,1996-12-05 00:00:00,R,Male,165,Midfielder,MID,Egypt,2026/2027,active
+7,7173c322-3463-56d6-ad76-a0d608f94bea,Abdelrahman,Mahmoud,Abouda,A.Abouda,,2000-10-19 00:00:00,R,Male,-,Midfielder,MID,Egypt,2026/2027,active
+29,c9dfc637-2cc0-5816-b79b-d9dd584d7c12,Ahmed,,El-Shamy,A.El-Shamy,,-,-,Male,-,Forward,FOR,Egypt,2026/2027,active
+11,765a1efc-0311-5ef4-a3cb-bb5b1529d6dd,Ayman,Ashraf,Nada,A.Nada,,1997-08-19 00:00:00,L,Male,173,Forward,FOR,Egypt,2026/2027,active
+30,a5830983-844c-5a63-be19-397c673ebcf6,Godwin,,Friday,G.Friday,,2002-06-30 00:00:00,R,Male,182,Forward,FOR,Nigeria,2026/2027,active
+21,ab898557-36ad-5bf5-b13c-c5d74e7d2057,Marwan,,Magdy,M.Magdy,,2003-11-01 00:00:00,R,Male,-,Forward,FOR,Egypt,2026/2027,active
+10,d5fb0b57-64a7-5d27-9c3c-b0ec9ff485d1,Mohamed,,Abdelqawy,M.Hambozo,Hambozo,1993-10-18 00:00:00,R,Male,170,Forward,FOR,Egypt,2026/2027,active
+25,57f2400b-7ae9-5c10-8e48-860a3274e28e,Mahmoud,,Ageeb,M.Ageeb,,-,-,Male,-,Forward,FOR,Egypt,2026/2027,active
+9,41054417-5af4-54f0-9b3c-b4fa47bfea87,Ahmed,,Raafat,A.Raafat,,2001-12-17 00:00:00,R,Male,180,Forward,FOR,Egypt,2026/2027,active
+23,700388fe-c690-5dca-b1c8-6e967e7027a8,Mazen,,Yasser,M.Yasser,,-,-,Male,-,Forward,FOR,Egypt,2026/2027,active
+19,90df6f03-6fb6-56e6-8634-7dcf5492b480,Mostafa,,Sultan,M.Sultan,,1992-02-20 00:00:00,R,Male,-,Forward,FOR,Egypt,2026/2027,active
