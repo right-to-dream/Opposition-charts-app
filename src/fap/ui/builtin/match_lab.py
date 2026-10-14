@@ -339,11 +339,17 @@ class MatchLabPage(Page):
         if key in IX.INTERACTIVE:
             try:
                 from fap.matchlab.charts import THEMES
+                ix_kw = {"names": ctx.get("names") or {}, **opts}        # a chart's own `names` wins
                 fig = IX.build(key, ctx["md"], ctx["team"], half=ctx["half"], player=player,
-                               theme=THEMES[ctx["theme"]], names=ctx.get("names") or {}, **opts)
-                st.plotly_chart(fig, use_container_width=True, key=f"ml_ix_{key}", theme=None,
-                                config={"displaylogo": False, "scrollZoom": True,
-                                        "modeBarButtonsToRemove": ["lasso2d", "select2d", "toImage"]})
+                               theme=THEMES[ctx["theme"]], **ix_kw)
+                cfg = {"displaylogo": False, "scrollZoom": True,
+                       "modeBarButtonsToRemove": ["lasso2d", "select2d", "toImage"]}
+                if isinstance(fig, list):
+                    for i, (col, f) in enumerate(zip(st.columns(len(fig)), fig)):
+                        f.update_layout(height=470)
+                        col.plotly_chart(f, use_container_width=True, key=f"ml_ix_{key}_{i}", theme=None, config=cfg)
+                else:
+                    st.plotly_chart(fig, use_container_width=True, key=f"ml_ix_{key}", theme=None, config=cfg)
                 st.caption("Interactive: hover any point for details · drag to zoom, double-click to reset · "
                            "click a legend item to hide / show it. The PNG download below is the report version.")
                 shown = True

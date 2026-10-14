@@ -272,8 +272,12 @@ def _shots(md: "MatchData") -> None:
     if xg is None or np.all(np.isnan(xg)):
         xg = simple_xg(ev.loc[idx, "x"].to_numpy(float), ev.loc[idx, "y"].to_numpy(float),
                        ev.loc[idx, "body_part"].eq("Head").to_numpy())
-        md.notes.append("xG: distance/angle logistic model (internal model unavailable).")
+        xg = np.where(ev.loc[idx, "set_piece_kind"].eq("penalty").to_numpy(), PENALTY_XG, xg)
+        md.notes.append("xG: distance/angle logistic model (internal model unavailable); penalties = 0.76.")
     ev.loc[idx, "xg"] = np.clip(np.nan_to_num(xg, nan=0.03), 0.0, 0.99)
+
+
+PENALTY_XG = 0.76            # standard penalty conversion, used only by the fallback model
 
 
 def simple_xg(x, y, header) -> np.ndarray:

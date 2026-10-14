@@ -361,3 +361,19 @@ def test_interactive_hover_figures(md, proxy):
     g = IX.build("counterpress", proxy, "Masar", theme=DARK)
     assert g is not None and len(g.data) >= 0
     assert IX.build("comparison", md, "A") is None          # static-only charts are untouched
+
+
+def test_all_interactive_charts_build(md, proxy):
+    from fap.matchlab import interactive as IX
+    from fap.matchlab.charts import DARK, LIGHT
+    for key in IX.INTERACTIVE:
+        for m, team in ((md, "A"), (proxy, "Masar"), (proxy, "Proxy")):
+            out = IX.build(key, m, team, theme=LIGHT if team == "Proxy" else DARK, names={})
+            figs = out if isinstance(out, list) else [out]
+            assert figs and all(f is not None for f in figs), key
+    assert IX.build("pass_map_halves", proxy, "Masar", theme=DARK) is not None
+
+
+def test_fallback_xg_penalty(proxy):
+    pen = proxy.events[(proxy.events["etype"] == "shot") & proxy.events["set_piece_kind"].eq("penalty")]
+    assert len(pen) == 1 and pen["xg"].iloc[0] > 0.5
