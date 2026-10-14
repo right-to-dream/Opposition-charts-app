@@ -195,10 +195,10 @@ def _possessions(md: "MatchData") -> None:
             end_reason = "Shot"
         elif nxt is not None and nxt["etype"] in ("half_end", "half_start"):
             end_reason = "Half end"
-        elif g["etype"].isin(["ball_out"]).any() and g.iloc[-1]["etype"] == "ball_out":
-            end_reason = "Out of play"
-        elif g.iloc[-1]["etype"] in ("foul", "offside"):
-            end_reason = g.iloc[-1]["tag"]
+        elif g["etype"].isin(["ball_out", "foul", "offside"]).any():
+            # the FIRST dead ball ends the possession (later presses etc. are tagged in the same id)
+            dead = g[g["etype"].isin(["ball_out", "foul", "offside"])].iloc[0]
+            end_reason = "Out of play" if dead["etype"] == "ball_out" else dead["tag"]
         else:
             end_reason = "Lost"
         start_type = ("Regain" if first["etype"] in ("recovery", "interception", "tackle")

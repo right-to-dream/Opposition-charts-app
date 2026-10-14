@@ -334,7 +334,23 @@ class MatchLabPage(Page):
         except Exception as exc:
             C.render_alert(f"{spec.label}: could not render ({exc})", "warning")
             return
-        st.image(png, use_container_width=True)
+        shown = False
+        from fap.matchlab import interactive as IX
+        if key in IX.INTERACTIVE:
+            try:
+                from fap.matchlab.charts import THEMES
+                fig = IX.build(key, ctx["md"], ctx["team"], half=ctx["half"], player=player,
+                               theme=THEMES[ctx["theme"]], names=ctx.get("names") or {}, **opts)
+                st.plotly_chart(fig, use_container_width=True, key=f"ml_ix_{key}", theme=None,
+                                config={"displaylogo": False, "scrollZoom": True,
+                                        "modeBarButtonsToRemove": ["lasso2d", "select2d", "toImage"]})
+                st.caption("Interactive: hover any point for details · drag to zoom, double-click to reset · "
+                           "click a legend item to hide / show it. The PNG download below is the report version.")
+                shown = True
+            except Exception as exc:  # fall back to the static chart
+                st.caption(f"Interactive view unavailable ({exc}); showing the static chart.")
+        if not shown:
+            st.image(png, use_container_width=True)
         cc = st.columns([2, 1.3, 1.3])
         part = cc[0].selectbox("Download", ["Whole chart"] + panels, key=f"ml_part_{key}",
                                label_visibility="collapsed",

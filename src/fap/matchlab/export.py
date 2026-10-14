@@ -222,6 +222,8 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
         d[col] = np.nan
     d["cp_first_presser"] = ""
     d["cp_category"] = ""
+    d["cp_press_timing"] = ""
+    d["cp_press_evidence"] = ""
     d["cp_window_s"] = np.nan
     if not cp.empty:
         cpi = cp.dropna(subset=["loss_event_id"]).set_index(cp["loss_event_id"].dropna().astype(int))
@@ -234,6 +236,8 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
         d.loc[m, "cp_seconds_to_regain"] = ids.map(cpi["seconds_to_regain"]).round(2).to_numpy()
         d.loc[m, "cp_first_presser"] = ids.map(cpi["first_presser"]).fillna("").to_numpy()
         d.loc[m, "cp_category"] = ids.map(cpi["category"]).to_numpy()
+        d.loc[m, "cp_press_timing"] = ids.map(cpi["press_timing"]).fillna("").to_numpy()
+        d.loc[m, "cp_press_evidence"] = ids.map(cpi["press_evidence"]).fillna("").to_numpy()
         d.loc[m, "cp_window_s"] = md.cp_window
 
     # ---- C. raw tag + one column per label -------------------------------------------------------------------

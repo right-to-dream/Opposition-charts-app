@@ -272,8 +272,9 @@ def test_counterpress_window():
     assert a["pressed"] and a["seconds_to_press"] == pytest.approx(2.0) and a["regained"]
     assert a["seconds_to_regain"] == pytest.approx(4.0) and a["category"] == "Pressed & regained"
     assert not b["pressed"] and not b["regained"] and b["category"] == "Not pressed, not regained"
-    # a 3-second window drops the regain (it came 4 s after the loss)
-    assert not CP.analyse(m, "Masar", 3)["regained"].iloc[0]
+    # a 1-second window: the press (2 s) comes after the opponent completed a pass -> not even late
+    tiny = CP.analyse(m, "Masar", 1).iloc[0]
+    assert not tiny["pressed"] and not tiny["regained"]
     s = CP.summary(d)
     assert s["losses"] == 2 and s["pressed"] == 1 and s["regained"] == 1
 
@@ -307,3 +308,56 @@ def test_bundled_reference_fills_ids_without_uploads(proxy):
     assert m["team_id"].eq("25bd1277-b0e7-5e6c-b692-1716a60099f5").all()
     known = m["player_number"].isin(list(ref.squad.by_shirt))
     assert m.loc[known, "player_id"].ne("").all()
+
+
+def _late_match(extra_rows) -> pd.DataFrame:
+    r = lambda tag, team, pl, x, y, t, lab="": _row(tag, team, pl, x, y, t, lab)
+    base = [r("Half Start", None, None, None, None, 0.0),
+            r("Shot", "Masar", 9, 12, 34, 1.0, "Off target"), r("Shot", "Masar", 9, 10, 30, 2.0, "Off target"),
+            r("Shot", "Opp", 0, 95, 34, 3.0, "Off target"), r("Shot", "Opp", 0, 92, 30, 4.0, "Off target"),
+            r("Pass", "Masar", 6, 60, 30, 10.0, "Unsuccessful"),
+            r("Interception", "Opp", 0, 40, 35, 11.0, "Won")]
+    return pd.DataFrame(base + [r(*x) for x in extra_rows])
+
+
+def test_late_counterpress_counts_before_opponent_settles():
+    from fap.matchlab import counterpress as CP
+    # press 11.3 s after the loss, nothing in between -> late counter-press, failed
+    m = load_match(_late_match([("Press", "Masar", 7, 50, 30, 22.3), ("Pass", "Opp", 0, 45, 30, 30.0, "Successful")]), "l.xlsx")
+    d = CP.analyse(m, "Masar", 8).iloc[0]
+    assert d["pressed"] and d["press_timing"] == "late" and d["category"] == "Pressed, not regained"
+    assert d["seconds_to_press"] == pytest.approx(11.3)
+    # same press, but the opponent completed a pass first -> settled possession, not a counter-press
+    m2 = load_match(_late_match([("Pass", "Opp", 0, 42, 35, 15.0, "Successful"), ("Receive", "Opp", 0, 50, 35, 16.0, "Successful"),
+                                 ("Press", "Masar", 7, 50, 30, 22.3)]), "l2.xlsx")
+    assert not CP.analyse(m2, "Masar", 8).iloc[0]["pressed"]
+
+
+def test_under_pressure_label_and_duel_count_as_pressure():
+    from fap.matchlab import counterpress as CP
+    m = load_match(_late_match([("Pass", "Opp", 0, 42, 35, 14.0, "Unsuccessful, Under Press"),
+                                ("Recovery", "Masar", 8, 58, 31, 16.0), ("Pass", "Masar", 8, 58, 31, 17.0, "Successful")]), "u.xlsx")
+    d = CP.analyse(m, "Masar", 8).iloc[0]
+    assert d["pressed"] and d["press_evidence"] == "Opponent under pressure" and d["regained"]
+
+
+def test_dead_ball_after_loss_is_not_an_open_play_loss():
+    from fap.matchlab import counterpress as CP
+    r = lambda tag, team, pl, x, y, t, lab="": _row(tag, team, pl, x, y, t, lab)
+    df = pd.DataFrame([r("Half Start", None, None, None, None, 0.0),
+                       r("Shot", "Masar", 9, 12, 34, 1.0, "Off target"), r("Shot", "Masar", 9, 10, 30, 2.0, "Off target"),
+                       r("Shot", "Opp", 0, 95, 34, 3.0, "Off target"), r("Shot", "Opp", 0, 92, 30, 4.0, "Off target"),
+                       r("Pass", "Masar", 6, 60, 30, 10.0, "Unsuccessful"), r("Ball Out", "Masar", 6, 60, -1, 11.0),
+                       r("Press", "Masar", 7, 50, 30, 13.0), r("Pass", "Opp", 0, 45, 0, 30.0, "Throw In, Successful")])
+    assert CP.analyse(load_match(df, "d.xlsx"), "Masar", 8).empty
+
+
+def test_interactive_hover_figures(md, proxy):
+    from fap.matchlab import interactive as IX
+    from fap.matchlab.charts import DARK
+    f = IX.build("pass_map", md, "A", theme=DARK, names={"4": "Kamel"}, kind="all")
+    hovers = [t for tr in f.data if tr.text is not None for t in tr.text]
+    assert any("#4 Kamel" in h and "→ #10" in h and "file pos" in h for h in hovers)
+    g = IX.build("counterpress", proxy, "Masar", theme=DARK)
+    assert g is not None and len(g.data) >= 0
+    assert IX.build("comparison", md, "A") is None          # static-only charts are untouched

@@ -1428,8 +1428,8 @@ def counterpress_map(md: MatchData, team: str, *, half=None, player=None, theme:
         sm = CP.summary(d)
         fig = _figure(th, (16.5, 9.6), f"{team} — Counter-press after losing the ball",
                       _subtitle(md, team, half, None, f"first {window:.0f} s after each open-play loss"),
-                      f"Loss = where the opponent won the ball · pressed = {sm.get('press_source', 'Press tags')} within {window:.0f} s · "
-                      f"regained = open-play regain within {window:.0f} s")
+                      f"Loss = where the opponent won the ball · pressure = {sm.get('press_source', 'Press tags')} within {window:.0f} s "
+                      f"(late: up to +{sm.get('late_extra_s', 4):.0f} s, before the opponent completes a pass) · regained = open-play regain")
         ax = fig.add_axes([0.02, 0.36, 0.6, 0.5])
         pitch = _pitch(th)
         pitch.draw(ax=ax)
@@ -1452,7 +1452,8 @@ def counterpress_map(md: MatchData, team: str, *, half=None, player=None, theme:
                          for c, col in cols.items()], y=-0.07, ncol=2)
         _set_panel(fig, "Pitch", ax)
         items = [("Ball losses (open play)", _fmt(sm.get("losses", 0))),
-                 (f"Pressed within {window:.0f} s", f"{sm.get('pressed', 0)}  ({_fmt(sm.get('pressed_pct'), 0, True)})"),
+                 (f"Counter-pressed ({sm.get('late_presses', 0)} late, {window:.0f}–{window + sm.get('late_extra_s', 4):.0f} s)",
+                  f"{sm.get('pressed', 0)}  ({_fmt(sm.get('pressed_pct'), 0, True)})"),
                  ("Avg. time to first press", _fmt(sm.get("avg_seconds_to_press"), 1) + " s"),
                  (f"Regained within {window:.0f} s", f"{sm.get('regained', 0)}  ({_fmt(sm.get('regained_pct'), 0, True)})"),
                  ("Regain rate · pressed / not", f"{_fmt(sm.get('regain_rate_when_pressed'), 0, True)} / {_fmt(sm.get('regain_rate_without_press'), 0, True)}"),
@@ -1463,7 +1464,7 @@ def counterpress_map(md: MatchData, team: str, *, half=None, player=None, theme:
         _set_panel(fig, "Summary", kax)
         axh = fig.add_axes([0.05, 0.07, 0.4, 0.2])
         if not d.empty and d["pressed"].any():
-            bins = np.arange(0, window + 1, 1)
+            bins = np.arange(0, window + sm.get("late_extra_s", 4) + 1, 1)
             pr = d[d["pressed"]]
             a, _ = np.histogram(pr.loc[pr["regained"], "seconds_to_press"], bins=bins)
             b, _ = np.histogram(pr.loc[~pr["regained"], "seconds_to_press"], bins=bins)
@@ -1471,6 +1472,8 @@ def counterpress_map(md: MatchData, team: str, *, half=None, player=None, theme:
             axh.bar(xs, a, width=0.8, color=th.good, label="then regained")
             axh.bar(xs, b, width=0.8, bottom=a, color=th.accent, label="not regained")
             axh.set_xticks(bins)
+            axh.axvline(window, color=th.muted, lw=1.2, ls=(0, (4, 3)))
+            axh.text(window + 0.1, axh.get_ylim()[1] * 0.92, "late", fontsize=8, color=th.muted, va="top")
             axh.legend(frameon=False, fontsize=8, labelcolor=th.muted)
         axh.set_xlabel("seconds after the loss", color=th.muted, fontsize=8.5)
         axh.set_title("TIME TO FIRST PRESS", loc="left", fontsize=9, color=th.muted, fontweight="bold")
