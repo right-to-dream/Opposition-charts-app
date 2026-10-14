@@ -7,7 +7,7 @@ Sheet "Events" (one row per tagged event, in file order):
      "next row's start" proxy, and IDs resolved from the reference tables.
   B. Derived analysis columns: attack-normalised coordinates, outcome, receiver, length, angle,
      direction, progressive, entries, pass type, thirds / channels, phases, possession, xG.
-  C. ``tag_name`` + ``labels`` exactly as tagged, then ``label_<name>`` = TRUE/FALSE for every label used.
+  C. ``tag_name`` + ``labels`` exactly as tagged, then ``label_<name>`` = 1/0 for every label used. Every yes/no column is written as 1 / 0.
 Other sheets: Carries (derived), Possessions, Players, Team summary, Data audit, Info.
 """
 from __future__ import annotations
@@ -121,6 +121,20 @@ def label_outcome(labels_raw: tuple) -> str:
     if len(has) == 2:
         return "conflicting"
     return next(iter(has), "")
+
+
+def flags_to_01(df: pd.DataFrame) -> pd.DataFrame:
+    """Every yes/no column (bool dtype, or object columns holding only True/False) -> 1 / 0."""
+    out = df.copy()
+    for c in out.columns:
+        col = out[c]
+        if col.dtype == bool:
+            out[c] = col.astype(int)
+        elif col.dtype == object:
+            vals = set(col.dropna().map(type))
+            if vals and vals <= {bool, np.bool_}:
+                out[c] = col.map(lambda v: int(v) if isinstance(v, (bool, np.bool_)) else v)
+    return out
 
 
 def label_column(name: str) -> str:
@@ -252,7 +266,7 @@ def build_events(md: "MatchData", ref: Reference | None = None, match_id: str = 
     counts = pd.Series([lab for t in real["labels_raw"] for lab in t]).value_counts()
     for lab in [x for x in counts.index if x not in OUTCOME_LABELS]:     # those live in `outcome`
         c[label_column(lab)] = real["labels_raw"].map(lambda t, l=lab: l in t)
-    return pd.concat([out, d, c], axis=1).reset_index(drop=True)
+    return flags_to_01(pd.concat([out, d, c], axis=1).reset_index(drop=True))
 
 
 def _tagged_carry_ends(md: "MatchData") -> dict:
@@ -335,14 +349,14 @@ def build_workbook(md: "MatchData", ref: Reference | None = None, match_id: str 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         events.to_excel(xw, sheet_name="Events", index=False)
-        carries.to_excel(xw, sheet_name="Carries (derived)", index=False)
+        flags_to_01(carries).to_excel(xw, sheet_name="Carries (derived)", index=False)
         if not poss.empty:
-            poss.to_excel(xw, sheet_name="Possessions", index=False)
+            flags_to_01(poss).to_excel(xw, sheet_name="Possessions", index=False)
         if not players.empty:
             players.to_excel(xw, sheet_name="Players", index=False)
         team_sum.to_excel(xw, sheet_name="Team summary")
         if not cpt.empty:
-            cpt.to_excel(xw, sheet_name="Counter-press", index=False)
+            flags_to_01(cpt).to_excel(xw, sheet_name="Counter-press", index=False)
         aud.to_excel(xw, sheet_name="Data audit", index=False)
         info.to_excel(xw, sheet_name="Info", index=False)
         for ws in xw.book.worksheets:
