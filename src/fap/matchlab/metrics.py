@@ -360,7 +360,8 @@ def player_table(md: "MatchData", team: str, half: int | None = None) -> pd.Data
             "Def. actions": int(g["etype"].isin(DEF_ACTIONS).sum()),
             "Recoveries": int((g["etype"] == "recovery").sum()),
             "Losses": int(((g["etype"] == "pass") & (g["outcome"] == 0)).sum() + (g["etype"] == "ball_lost").sum()
-                          + ((g["etype"] == "dribble") & (g["outcome"] == 0)).sum()),
+                          + ((g["etype"] == "dribble") & (g["outcome"] == 0)).sum()
+                          + ((g["etype"] == "error") & g["labels"].map(lambda l: "ball lost" in l)).sum()),
         })
     out = pd.DataFrame(rows)
     if not out.empty:

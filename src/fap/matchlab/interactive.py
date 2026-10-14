@@ -629,9 +629,486 @@ def network(md: MatchData, team: str, *, half=None, player=None, theme: Theme = 
     return fig
 
 
+# ------------------------------------------------------------------ colour helpers
+def _hex_rgb(h: str) -> tuple:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _mix(c1: str, c2: str, t: float) -> str:
+    a, b = _hex_rgb(c1), _hex_rgb(c2)
+    t = float(min(max(t, 0.0), 1.0))
+    return "rgb({},{},{})".format(*[round(a[i] + (b[i] - a[i]) * t) for i in range(3)])
+
+
+def _acc_color(th: Theme, acc: float) -> str:
+    """0 → bad, 0.5 → accent, 1 → good."""
+    if acc is None or np.isnan(acc):
+        return th.muted
+    return _mix(th.bad, th.accent, acc * 2) if acc < 0.5 else _mix(th.accent, th.good, (acc - 0.5) * 2)
+
+
+def _heat_color(th: Theme, t: float) -> str:
+    stops = list(th.heat)
+    t = float(min(max(t, 0.0), 1.0)) * (len(stops) - 1)
+    i = min(int(t), len(stops) - 2)
+    return _mix(stops[i], stops[i + 1], t - i)
+
+
+def _zone_name(x0: float, x1: float, y0: float, y1: float) -> str:
+    from fap.matchlab.metrics import channel_of, third_of
+    return f"{third_of([(x0 + x1) / 2])[0]} · {channel_of([(y0 + y1) / 2])[0]}"
+
+
+def _dir_name(a: float) -> str:
+    if abs(a) <= 15:
+        return "straight forward"
+    if abs(a) >= 165:
+        return "straight back"
+    side = "left" if a > 0 else "right"
+    if abs(a) < 90:
+        return f"forward-{side} ({abs(a):.0f}°)"
+    if abs(a) == 90:
+        return f"square {side}"
+    return f"back-{side} ({abs(a):.0f}°)"
+
+
+def _poly(fig: go.Figure, xs, ys, color: str, text: str, opacity: float = 0.9, line=None, name=None,
+          showlegend=False) -> None:
+    fig.add_trace(go.Scatter(x=list(xs) + [xs[0]], y=list(ys) + [ys[0]], fill="toself", fillcolor=color, mode="lines",
+                             line=line or dict(width=0, color=color), opacity=opacity, hoveron="fills",
+                             text=text, hoverinfo="text", name=name, showlegend=showlegend))
+
+
+def _rect(fig, x0, x1, y0, y1, color, text, opacity=0.85, line=None):
+    _poly(fig, [x0, x1, x1, x0], [y0, y0, y1, y1], color, text, opacity, line)
+
+
+def _passes(md: MatchData, team: str, half=None, player=None) -> pd.DataFrame:
+    p = _scope(md, team, half, player)
+    return p[(p["etype"] == "pass") & p["angle"].notna() & p["end_x"].notna()]
+
+
+# ------------------------------------------------------------------ pass sonars by zone
+def sonars(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, names: dict | None = None,
+           bins: tuple = (6, 4)) -> go.Figure:
+    th = theme
+    p = _passes(md, team, half, player)
+    fig = _pitch(th, f"{team} — Pass sonars by zone", _subtitle(md, team, half, player,
+                 "wedge = direction · length = share of the zone's passes · colour = accuracy"))
+    nx, ny = bins
+    wx, wy = PITCH_L / nx, PITCH_W / ny
+    rmax = min(wx, wy) * 0.46
+    edges = np.linspace(-180, 180, 13)
+    for i in range(nx):
+        for j in range(ny):
+            x0, x1, y0, y1 = i * wx, (i + 1) * wx, j * wy, (j + 1) * wy
+            z = p[(p["x"] >= x0) & (p["x"] < x1) & (p["y"] >= y0) & (p["y"] < y1)]
+            fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1, line=dict(color=th.grid, width=0.6), layer="below")
+            if len(z) < 2:
+                continue
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            cnt = np.histogram(z["angle"], bins=edges)[0]
+            mx = cnt.max()
+            for k in range(12):
+                if not cnt[k]:
+                    continue
+                sel = z[(z["angle"] >= edges[k]) & (z["angle"] < edges[k + 1])]
+                acc = float((sel["outcome"] == 1).mean())
+                r = rmax * (0.25 + 0.75 * cnt[k] / mx)
+                th_ = np.radians(np.linspace(edges[k] + 1.5, edges[k + 1] - 1.5, 8))
+                xs = [cx] + list(cx + r * np.cos(th_))
+                ys = [cy] + list(cy + r * np.sin(th_))
+                text = (f"<b>{_zone_name(x0, x1, y0, y1)}</b><br>Direction: {_dir_name((edges[k] + edges[k + 1]) / 2)}<br>"
+                        f"{cnt[k]} of {len(z)} passes from this zone ({cnt[k] / len(z) * 100:.0f}%)<br>"
+                        f"Completed {int((sel['outcome'] == 1).sum())} · accuracy {acc * 100:.0f}% · avg {sel['length'].mean():.1f} m")
+                _poly(fig, xs, ys, _acc_color(th, acc), text, opacity=0.92)
+            fig.add_annotation(x=cx, y=y0 + 1.2, text=str(len(z)), showarrow=False, font=dict(size=10, color=th.muted))
+    if p.empty:
+        _empty(fig, th)
+    return fig
+
+
+# ------------------------------------------------------------------ pass flow
+def flow(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, names: dict | None = None,
+         bins: tuple = (6, 5)) -> go.Figure:
+    th, names = theme, names or {}
+    p = _passes(md, team, half, player)
+    fig = _pitch(th, f"{team} — Pass flow", _subtitle(md, team, half, player,
+                 "shade = passes started in the zone · arrow = average direction & distance"))
+    nx, ny = bins
+    wx, wy = PITCH_L / nx, PITCH_W / ny
+    zones = []
+    for i in range(nx):
+        for j in range(ny):
+            x0, x1, y0, y1 = i * wx, (i + 1) * wx, j * wy, (j + 1) * wy
+            zones.append((x0, x1, y0, y1, p[(p["x"] >= x0) & (p["x"] < x1) & (p["y"] >= y0) & (p["y"] < y1)]))
+    mx = max([len(z) for *_, z in zones] + [1])
+    for x0, x1, y0, y1, z in zones:
+        if not len(z):
+            _rect(fig, x0, x1, y0, y1, th.pitch, f"<b>{_zone_name(x0, x1, y0, y1)}</b><br>no passes", 0.2)
+            continue
+        vx, vy = (z["end_x"] - z["x"]).mean(), (z["end_y"] - z["y"]).mean()
+        acc = (z["outcome"] == 1).mean()
+        top = z[z["player"].ne("") & z["player"].ne("0")]["player"].value_counts().head(2)
+        who = ", ".join(f"{_who(k, names)} ({v})" for k, v in top.items()) or "–"
+        text = (f"<b>{_zone_name(x0, x1, y0, y1)}</b><br>{len(z)} passes started here · accuracy {acc * 100:.0f}%<br>"
+                f"Average pass: {_dir_name(float(np.degrees(np.arctan2(vy, vx))))} · {np.hypot(vx, vy):.1f} m net<br>"
+                f"Forward {int((z['direction'] == 'Forward').sum())} · lateral {int(z['direction'].isin(['Left', 'Right']).sum())}"
+                f" · back {int((z['direction'] == 'Backward').sum())}<br>Most from: {who}")
+        _rect(fig, x0, x1, y0, y1, _heat_color(th, len(z) / mx), text, 0.9, line=dict(color=th.bg, width=1.5))
+        n = np.hypot(vx, vy)
+        if len(z) >= 2 and n:
+            sc = min(1.0, (min(wx, wy) * 0.42) / n)
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            fig.add_annotation(x=cx + vx * sc, y=cy + vy * sc, ax=cx - vx * sc * 0.4, ay=cy - vy * sc * 0.4, xref="x", yref="y",
+                               axref="x", ayref="y", showarrow=True, arrowhead=2, arrowwidth=2.2, arrowsize=1,
+                               arrowcolor=th.text, opacity=0.35 + 0.6 * acc, text="")
+    return fig
+
+
+# ------------------------------------------------------------------ heat map
+def heat(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, style: str = "smooth",
+         names: dict | None = None) -> go.Figure:
+    from fap.matchlab.metrics import CHANNEL_EDGES, CHANNELS, THIRD_NAMES
+    th = theme
+    ev = _scope(md, team, half, player)
+    ev = ev[ev["etype"].isin(["pass", "receive", "carry", "dribble", "shot", "recovery", "interception", "tackle", "duel"])
+            & ev["x"].notna() & ~ev["derived"].astype(bool)]
+    fig = _pitch(th, f"{team} — {'Touch' if player else 'Activity'} heat map",
+                 _subtitle(md, team, half, player, f"{len(ev)} on-ball & defensive actions"))
+    if ev.empty:
+        _empty(fig, th)
+        return fig
+    if style == "zones":
+        t1, t2 = md.thirds
+        for (a, b), tn in zip(((0, t1), (t1, t2), (t2, PITCH_L)), THIRD_NAMES):
+            for k in range(5):
+                y0, y1 = CHANNEL_EDGES[k], CHANNEL_EDGES[k + 1]
+                m = (ev["x"] >= a) & (ev["x"] < b) & (ev["y"] >= y0) & (ev["y"] < y1)
+                share = m.mean()
+                top = ev[m]["etype"].value_counts().head(3)
+                _rect(fig, a, b, y0, y1, _heat_color(th, share * 6), (
+                    f"<b>{tn} · {CHANNELS[k]}</b><br>{int(m.sum())} actions · {share * 100:.1f}% of all<br>"
+                    + ", ".join(f"{k2} {v}" for k2, v in top.items())), 0.9, line=dict(color=th.bg, width=1.5))
+                if m.sum():
+                    fig.add_annotation(x=(a + b) / 2, y=(y0 + y1) / 2, text=f"{share * 100:.0f}%", showarrow=False,
+                                       font=dict(size=12, color=th.text))
+        return fig
+    from scipy.ndimage import gaussian_filter
+    nx, ny = 42, 28
+    H, xe, ye = np.histogram2d(ev["x"], ev["y"], bins=[nx, ny], range=[[0, PITCH_L], [0, PITCH_W]])
+    raw = H.T
+    smooth = gaussian_filter(raw.astype(float), 1.6)
+    xc, yc = (xe[:-1] + xe[1:]) / 2, (ye[:-1] + ye[1:]) / 2
+    text = [[f"x {xe[i]:.0f}–{xe[i + 1]:.0f} m · y {ye[j]:.0f}–{ye[j + 1]:.0f} m<br>{int(raw[j, i])} actions in this cell"
+             f"<br>density {smooth[j, i] / smooth.max() * 100:.0f}% of the peak" for i in range(nx)] for j in range(ny)]
+    fig.add_trace(go.Heatmap(x=xc, y=yc, z=smooth, colorscale=[[i / (len(th.heat) - 1), c] for i, c in enumerate(th.heat)],
+                             showscale=False, zsmooth="best", text=text, hoverinfo="text", opacity=0.95))
+    return fig
+
+
+# ------------------------------------------------------------------ phases of play
+def _band(fig, th, a, b, color, text):
+    _rect(fig, a, b, 0, PITCH_W, color, text, opacity=0.12)
+
+
+def phases_in(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, names: dict | None = None) -> go.Figure:
+    from fap.matchlab import phases as PH
+    th, names = theme, names or {}
+    tab = PH.in_possession_table(md, team, half)
+    ev = _scope(md, team, half, None)
+    fig = _pitch(th, f"{team} — Phases of play · in possession",
+                 _subtitle(md, team, half, extra="hover a band for its numbers · arrows = progressive passes · ✕ = losses"))
+    t1, t2 = md.thirds
+    cols = [th.team, th.accent, th.good]
+    for (a, b), (_, r), col in zip(((0, t1), (t1, t2), (t2, PITCH_L)), tab.iterrows(), cols):
+        _band(fig, th, a, b, col, (
+            f"<b>{r['Phase']}</b> — {r['Share %']:.0f}% of actions ({int(r['Actions'])})<br>"
+            f"Passes {int(r['Passes'])} · accuracy {_fmt(r['Accuracy %'], 0, '%')} · forward {_fmt(r['Forward %'], 0, '%')}<br>"
+            f"Progressive {int(r['Progressive'])} · line breaks {int(r['Line breaks'])} · avg pass {_fmt(r['Avg pass (m)'])} m<br>"
+            f"Losses {int(r['Losses'])} ({_fmt(r['Loss %'], 0, '%')}) · under pressure {int(r['Under pressure'])}<br>"
+            f"Key players: {r['Key players'] or '–'}"))
+        fig.add_annotation(x=(a + b) / 2, y=PITCH_W + 1.5, text=f"<b>{r['Phase'].upper()}</b> · {r['Share %']:.0f}%",
+                           showarrow=False, yanchor="bottom", font=dict(size=12, color=col))
+    prog = ev[(ev["etype"] == "pass") & ev["progressive"] & (ev["outcome"] == 1) & ev["end_x"].notna()]
+    _add_moves(fig, prog, th.text, "Progressive pass", names, th, width=1.4)
+    loss = ev[ev["etype"].isin(["pass", "dribble"]) & (ev["outcome"] == 0) & ev["x"].notna()]
+    if len(loss):
+        fig.add_trace(go.Scatter(x=loss["x"], y=loss["y"], mode="markers", name=f"Ball loss ({len(loss)})",
+                                 text=[_point_hover(r, names, f"Loss — {r['etype']}", f"phase: {r['phase'] or '–'}")
+                                       for _, r in loss.iterrows()], hovertemplate="%{text}<extra></extra>",
+                                 marker=dict(size=9, color=th.bad, symbol="x")))
+    fig.update_layout(yaxis_range=[-6, PITCH_W + 6])
+    return fig
+
+
+def phases_out(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, names: dict | None = None) -> go.Figure:
+    from fap.matchlab import phases as PH
+    th, names = theme, names or {}
+    tab = PH.out_of_possession_table(md, team, half).set_index("Phase")
+    ev = _scope(md, team, half, None)
+    d = ev[ev["def_phase"] != ""]
+    k = PH.defending_kpis(md, team, half)
+    fig = _pitch(th, f"{team} — Phases of play · out of possession", _subtitle(md, team, half, extra=(
+        f"PPDA {_fmt(k['PPDA'])} · def. height {_fmt(k['Def. action height (m)'])} m · hover a band for its numbers")))
+    t1, t2 = md.thirds
+    for (a, b), ph, col in zip(((0, t1), (t1, t2), (t2, PITCH_L)), ("Low block", "Mid block", "High press"),
+                               (th.bad, th.accent, th.good)):
+        if ph not in tab.index:
+            continue
+        r = tab.loc[ph]
+        _band(fig, th, a, b, col, (
+            f"<b>{ph}</b> — {r['Share %']:.0f}% of defensive actions ({int(r['Actions'])})<br>"
+            f"Regains {int(r['Regains'])} · interceptions {int(r['Interceptions'])} · tackles {int(r['Tackles'])}<br>"
+            f"Recoveries {int(r['Recoveries'])} · duels {int(r['Duels'])} · fouls {int(r['Fouls'])} · presses {int(r['Presses'])}<br>"
+            f"Success {_fmt(r['Success %'], 0, '%')} · counter-press actions {int(r['Counter-press'])}"))
+        fig.add_annotation(x=(a + b) / 2, y=PITCH_W + 1.5, text=f"<b>{ph.upper()}</b> · {r['Share %']:.0f}%",
+                           showarrow=False, yanchor="bottom", font=dict(size=12, color=col))
+    for cp, name, col, sym in ((False, "Defensive action", th.team, "circle"), (True, "Counter-press action", th.accent, "diamond")):
+        g = d[d["counter_press"].astype(bool) == cp]
+        if g.empty:
+            continue
+        fig.add_trace(go.Scatter(x=g["x"], y=g["y"], mode="markers", name=f"{name} ({len(g)})",
+                                 text=[_point_hover(r, names, r["etype"].title(), f"{r['def_phase']} · {', '.join(r['labels'])}")
+                                       for _, r in g.iterrows()], hovertemplate="%{text}<extra></extra>",
+                                 marker=dict(size=9 if not cp else 11, color=col, symbol=sym, line=dict(color=th.bg, width=0.6))))
+    if len(d):
+        h = d["x"].mean()
+        fig.add_shape(type="line", x0=h, x1=h, y0=0, y1=PITCH_W, line=dict(color=th.text, width=1.5, dash="dash"))
+    fig.update_layout(yaxis_range=[-6, PITCH_W + 6])
+    return fig
+
+
+# ------------------------------------------------------------------ build-up sequences (tiled pitches)
+def buildup(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, min_passes: int = 3,
+            max_panels: int = 12, names: dict | None = None) -> go.Figure:
+    from fap.matchlab.charts import _action_text, sequence_events
+    th, names = theme, names or {}
+    poss = md.possessions
+    sel = poss[(poss["team"] == team) & (poss["start_x"] < md.thirds[0]) & (poss["n_passes"] >= min_passes)] if not poss.empty else poss
+    if half is not None and not sel.empty:
+        sel = sel[sel["half"] == half]
+    sel = sel.sort_values(["shot", "reached_f3", "n_passes"], ascending=False).head(max_panels) if not sel.empty else sel
+    cols = 4
+    rows = max(1, int(np.ceil(len(sel) / cols)))
+    gx, gy = PITCH_L + 10, PITCH_W + 16
+    fig = _pitch(th, f"{team} — Build-up sequences", _subtitle(md, team, half, extra=(
+        f"started in own third, ≥{min_passes} passes · best {len(sel)} · hover any action")), height=230 * rows + 120)
+    # one pitch per sequence, tiled with x / y offsets
+    allshapes = []
+    for k in range(len(sel)):
+        r, c = divmod(k, cols)
+        for s_ in _pitch_shapes(th, c * gx):
+            s_["y0"] -= r * gy
+            s_["y1"] -= r * gy
+            allshapes.append(s_)
+    fig.update_layout(shapes=allshapes, xaxis_range=[-3, cols * gx], yaxis_range=[-(rows - 1) * gy - 4, PITCH_W + 12],
+                      annotations=[], showlegend=False)
+    for k, (_, s) in enumerate(sel.iterrows()):
+        r, c = divmod(k, cols)
+        dx, dy = c * gx, -r * gy
+        col = th.good if s["shot"] else th.accent if s["reached_f3"] else th.bad
+        fig.add_annotation(x=dx, y=PITCH_W + 1.5 + dy, xanchor="left", yanchor="bottom", showarrow=False,
+                           text=f"<b>#{s['poss_id']}</b> · {s['start_min']:.0f}' · {s['n_passes']} passes · {s['duration']:.0f}s · {s['end_reason']}",
+                           font=dict(size=10.5, color=col))
+        seq = sequence_events(md, int(s["poss_id"]))
+        own = seq[seq["team"] == team]
+        n = 0
+        xs, ys, tx = [], [], []
+        lx, ly = [], []
+        for _, e in own.iterrows():
+            if e["etype"] == "receive":
+                continue
+            n += 1
+            if e["etype"] in ("pass", "carry") and pd.notna(e["end_x"]):
+                lx += [e["x"] + dx, e["end_x"] + dx, None]
+                ly += [e["y"] + dy, e["end_y"] + dy, None]
+            xs.append(e["x"] + dx)
+            ys.append(e["y"] + dy)
+            tx.append(f"<b>Sequence #{s['poss_id']} · step {n}</b> · {_mmss(e['minute'])}<br>{_action_text(e, names)}<br>"
+                      f"x {e['x']:.1f}, y {e['y']:.1f} m · event {_eid(e)}")
+        fig.add_trace(go.Scatter(x=lx, y=ly, mode="lines", line=dict(color=col, width=1.6), hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers", text=tx, hovertemplate="%{text}<extra></extra>",
+                                 marker=dict(size=6, color=col, line=dict(color=th.bg, width=0.5))))
+        opp = seq[seq["team"] != team]
+        if len(opp):
+            o = opp.iloc[0]
+            fig.add_trace(go.Scatter(x=[PITCH_L - o["x"] + dx], y=[PITCH_W - o["y"] + dy], mode="markers",
+                                     hovertext=[f"{o['team']} wins the ball · {o['etype']} · {_mmss(o['minute'])}"],
+                                     hovertemplate="%{hovertext}<extra></extra>", marker=dict(size=9, color=th.bad, symbol="x")))
+    if sel.empty:
+        _empty(fig, th, "No build-up sequences for this selection")
+    return fig
+
+
+# ------------------------------------------------------------------ player dashboard figures
+def player_rose(md: MatchData, team: str, player: str, *, half=None, theme: Theme = DARK) -> go.Figure:
+    th = theme
+    p = _passes(md, team, half, player)
+    edges = np.linspace(-180, 180, 17)
+    rows = []
+    for k in range(16):
+        sel = p[(p["angle"] >= edges[k]) & (p["angle"] < edges[k + 1])]
+        c = (edges[k] + edges[k + 1]) / 2
+        acc = float((sel["outcome"] == 1).mean()) if len(sel) else np.nan
+        rows.append((c, len(sel), int((sel["outcome"] == 1).sum()), acc, sel["length"].mean() if len(sel) else np.nan))
+    fig = go.Figure(go.Barpolar(
+        r=[r[1] for r in rows], theta=[r[0] for r in rows], width=[21] * 16,
+        marker=dict(color=[_acc_color(th, r[3]) for r in rows], line=dict(color=th.bg, width=1)),
+        text=[f"<b>{_dir_name(r[0])}</b><br>{r[1]} passes · {r[2]} completed"
+              + (f" · {r[3] * 100:.0f}%<br>avg length {r[4]:.1f} m" if r[1] else "") for r in rows],
+        hoverinfo="text"))
+    fig.update_layout(
+        title=dict(text=f"<b>Pass directions</b><br><span style='font-size:11px;color:{th.muted}'>bar = passes · colour = accuracy · forward = up</span>",
+                   x=0.02, font=dict(size=15, color=th.text)),
+        paper_bgcolor=th.bg, font=dict(color=th.text), height=430, margin=dict(l=55, r=55, t=70, b=25),
+        polar=dict(bgcolor=th.panel, angularaxis=dict(rotation=90, direction="counterclockwise", tickvals=[0, 90, 180, 270],
+                                                       ticktext=["FORWARD", "LEFT", "BACK", "RIGHT"], color=th.muted,
+                                                       gridcolor=th.grid),
+                   radialaxis=dict(showticklabels=False, gridcolor=th.grid)),
+        hoverlabel=dict(bgcolor=th.panel, bordercolor=th.grid, font=dict(color=th.text), align="left"))
+    return fig
+
+
+def player_receptions(md: MatchData, team: str, player: str, *, half=None, theme: Theme = DARK,
+                      names: dict | None = None) -> go.Figure:
+    th, names = theme, names or {}
+    ev = md.events if half is None else md.events[md.events["half"] == half]
+    rec = ev[(ev["team"] == team) & (ev["etype"] == "pass") & (ev["receiver"] == str(player)) & (ev["outcome"] == 1)]
+    fig = _pitch(th, f"{_who(player, names)} · receptions", _subtitle(md, team, half, player,
+                 f"{len(rec)} receptions · {int(rec['progressive'].sum())} progressive"), height=470)
+    for prog, name, col in ((False, "Reception", th.team), (True, "Progressive reception", th.accent)):
+        g = rec[rec["progressive"].astype(bool) == prog]
+        if g.empty:
+            continue
+        fig.add_trace(go.Scatter(x=g["end_x"], y=g["end_y"], mode="markers", name=f"{name} ({len(g)})",
+                                 text=[f"<b>From {_who(r['player'], names)}</b> · {_mmss(r['minute'])} · event {_eid(r)}<br>"
+                                       f"{r['pass_type'] or 'Pass'} · {_fmt(r['length'])} m · {str(r['direction']).lower()}<br>"
+                                       f"Received at x {r['end_x']:.1f}, y {r['end_y']:.1f} m ({r['end_third']}, {r['end_channel']})"
+                                       for _, r in g.iterrows()], hovertemplate="%{text}<extra></extra>",
+                                 marker=dict(size=11 if prog else 9, color=col, symbol="diamond" if prog else "circle",
+                                             line=dict(color=th.bg, width=0.8))))
+    if rec.empty:
+        _empty(fig, th, "No receptions")
+    return fig
+
+
+def player_defence(md: MatchData, team: str, player: str, *, half=None, theme: Theme = DARK,
+                   names: dict | None = None) -> go.Figure:
+    from fap.matchlab import counterpress as CP
+    from fap.matchlab.player import _losses
+    th, names = theme, names or {}
+    me = _scope(md, team, half, player)
+    d = me[me["etype"].isin(list(_DEF)) & me["x"].notna()]
+    lo = _losses(me)
+    lo = lo[lo["x"].notna()]
+    cp = CP.analyse(md, team, md.cp_window, half)
+    cp_by_loss = cp.set_index("loss_event_id") if not cp.empty else pd.DataFrame()
+    fig = _pitch(th, f"{_who(player, names)} · defending & losses", _subtitle(md, team, half, player,
+                 f"{len(d)} defensive actions · {len(lo)} ball losses"), height=470)
+    palette = [th.team, th.good, th.accent, th.carry, th.text, th.muted, th.opp, th.good]
+    for (k, (nm, sym)), col in zip(_DEF.items(), palette):
+        g = d[d["etype"] == k]
+        if g.empty:
+            continue
+        fig.add_trace(go.Scatter(x=g["x"], y=g["y"], mode="markers", name=f"{nm} ({len(g)})",
+                                 text=[_point_hover(r, names, nm, f"{', '.join(r['labels'])} · {r['def_phase'] or ''}"
+                                                    f"{' · counter-press' if r['counter_press'] else ''}") for _, r in g.iterrows()],
+                                 hovertemplate="%{text}<extra></extra>",
+                                 marker=dict(size=10, color=col, symbol=sym, line=dict(color=th.bg, width=0.7))))
+    if len(lo):
+        txt = []
+        for _, r in lo.iterrows():
+            extra = ""
+            eid = r.get("event_id")
+            if not cp_by_loss.empty and pd.notna(eid) and eid in cp_by_loss.index:
+                c = cp_by_loss.loc[eid]
+                c = c.iloc[0] if isinstance(c, pd.DataFrame) else c
+                extra = (f"Team reaction: <b>{c['category']}</b>"
+                         + (f" · press after {_fmt(c['seconds_to_press'])} s ({c['press_timing']})" if c["pressed"] else ""))
+            txt.append(_point_hover(r, names, f"Ball loss — {r['etype']}", extra))
+        fig.add_trace(go.Scatter(x=lo["x"], y=lo["y"], mode="markers", name=f"Ball loss ({len(lo)})", text=txt,
+                                 hovertemplate="%{text}<extra></extra>", marker=dict(size=11, color=th.bad, symbol="x")))
+    if d.empty and lo.empty:
+        _empty(fig, th)
+    return fig
+
+
+def player_breakdown(md: MatchData, team: str, player: str, *, half=None, theme: Theme = DARK) -> go.Figure:
+    from plotly.subplots import make_subplots
+    from fap.matchlab.player import profile
+    th = theme
+    pr = profile(md, team, player, half)
+    parts = [("Pass type", pr["by_type"]), ("Direction", pr["by_direction"]), ("Length", pr["by_length"])]
+    fig = make_subplots(rows=1, cols=3, subplot_titles=[t for t, _ in parts], horizontal_spacing=0.17)
+    for i, (t, g) in enumerate(parts, 1):
+        if g.empty:
+            continue
+        labels = list(g.index)[::-1]
+        att = g["attempted"].tolist()[::-1]
+        cmp_ = g["completed"].tolist()[::-1]
+        acc = g["accuracy"].tolist()[::-1]
+        hover = [f"<b>{l}</b><br>{c}/{a} completed · {ac:.0f}%" for l, a, c, ac in zip(labels, att, cmp_, acc)]
+        fig.add_trace(go.Bar(y=labels, x=att, orientation="h", marker_color=_mix(th.team, th.bg, 0.65), name="Attempted",
+                             showlegend=i == 1, text=hover, hoverinfo="text", textposition="none"), 1, i)
+        fig.add_trace(go.Bar(y=labels, x=cmp_, orientation="h", marker_color=th.team, name="Completed",
+                             showlegend=i == 1, text=hover, hoverinfo="text", textposition="none"), 1, i)
+    fig.update_layout(barmode="overlay", height=330, paper_bgcolor=th.bg, plot_bgcolor=th.bg, font=dict(color=th.text),
+                      margin=dict(l=105, r=10, t=60, b=10),
+                      title=dict(text="<b>Pass details</b>", x=0.01, font=dict(size=15, color=th.text)),
+                      legend=dict(orientation="h", y=1.18, x=1, xanchor="right", font=dict(color=th.muted)),
+                      hoverlabel=dict(bgcolor=th.panel, bordercolor=th.grid, font=dict(color=th.text), align="left"))
+    fig.update_xaxes(gridcolor=th.grid, zeroline=False)
+    fig.update_yaxes(gridcolor="rgba(0,0,0,0)", automargin=True, ticklabelstandoff=4)
+    for a in fig.layout.annotations:
+        a.font = dict(color=th.muted, size=12)
+    return fig
+
+
+def player_compare(md: MatchData, team: str, player: str, *, half=None, theme: Theme = DARK) -> go.Figure:
+    from fap.matchlab.player import comparison
+    th = theme
+    c = comparison(md, team, str(player), half)
+    fig = go.Figure()
+    if c.empty:
+        fig.update_layout(paper_bgcolor=th.bg, height=200)
+        return fig
+    c = c.iloc[::-1].rename(columns={"Team average": "avg", "Team best": "best", "Higher is better": "higher"})
+
+    def pct(v, best, higher):
+        if higher:
+            return v / best * 100 if best else 0.0
+        return best / v * 100 if v else 100.0
+
+    me = [pct(r.Player, r.best, r.higher) for r in c.itertuples()]
+    avg = [pct(r.avg, r.best, r.higher) for r in c.itertuples()]
+    hover = [f"<b>{r.Metric}</b><br>Player {r.Player:.2f}".rstrip("0").rstrip(".") +
+             f" · team average {r.avg:.2f} · team best {r.best:.2f}<br>Rank <b>{r.Rank}</b> of {r.Of}"
+             f"{'' if r.higher else ' (fewer is better)'}" for r in c.itertuples()]
+    cols = [th.good if r.Rank <= max(1, r.Of // 4) else th.accent if r.Rank <= r.Of // 2 else th.team for r in c.itertuples()]
+    fig.add_trace(go.Bar(y=c["Metric"], x=me, orientation="h", marker_color=cols, name="Player (% of team best)",
+                         text=[f"#{r.Rank}/{r.Of}" for r in c.itertuples()], textposition="outside",
+                         textfont=dict(color=th.muted, size=11), hovertext=hover, hoverinfo="text"))
+    fig.add_trace(go.Scatter(y=c["Metric"], x=avg, mode="markers", name="Team average",
+                             marker=dict(symbol="line-ns", size=18, line=dict(width=3, color=th.text)),
+                             hovertext=hover, hoverinfo="text"))
+    fig.update_layout(
+        title=dict(text=f"<b>Compared with the team</b><br><span style='font-size:11px;color:{th.muted}'>"
+                        f"bar = player as % of the team's best · line = team average · label = rank</span>",
+                   x=0.01, font=dict(size=15, color=th.text)),
+        height=40 + 30 * len(c) + 80, paper_bgcolor=th.bg, plot_bgcolor=th.bg, font=dict(color=th.text),
+        margin=dict(l=10, r=40, t=80, b=10), xaxis=dict(range=[0, 118], gridcolor=th.grid, ticksuffix="%"),
+        legend=dict(orientation="h", y=1.06, x=1, xanchor="right", font=dict(color=th.muted)),
+        hoverlabel=dict(bgcolor=th.panel, bordercolor=th.grid, font=dict(color=th.text), align="left"))
+    return fig
+
+
 INTERACTIVE = {"counterpress": counterpress, "pass_map": pass_map, "pass_map_halves": pass_map_halves,
                "progression": progression, "entries": entries, "crosses": crosses, "shots": shots,
-               "defensive": defensive, "losses": losses, "sequence": sequence, "pass_network": network}
+               "defensive": defensive, "losses": losses, "sequence": sequence, "pass_network": network,
+               "pass_sonars": sonars, "pass_flow": flow, "heatmap": heat, "phases_in": phases_in,
+               "phases_out": phases_out, "buildup": buildup}
 
 
 def build(key: str, md: MatchData, team: str, **kw):

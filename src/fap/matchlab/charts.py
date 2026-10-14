@@ -1158,44 +1158,121 @@ def team_comparison(md: MatchData, team: str, *, half=None, player=None, theme: 
 
 
 def player_dashboard(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK) -> plt.Figure:
+    """Player report page: passes, directions, receptions, defending + losses, pass details,
+    shots (when he has any), comparison with the team and the full numbers."""
+    from fap.matchlab.player import _losses, profile
     th = theme
     with plt.rc_context(_rc(th)):
         if not player:
-            fig = _figure(th, (14, 8), f"{team} — Player dashboard", "Pick a player to see their dashboard")
-            return fig
-        ev = _scope(md, team, half, player)
-        p = ev[(ev["etype"] == "pass") & ev["end_x"].notna()]
-        fig = _figure(th, (16, 9.4), f"#{player} — Player dashboard", _subtitle(md, team, half, player))
+            return _figure(th, (14, 8), f"{team} — Player dashboard", "Pick a player to see their dashboard")
+        pl = str(player)
+        pr = profile(md, team, pl, half)
+        ev = _scope(md, team, half, pl)
+        fig = _figure(th, (18, 13.5), f"#{pl} — Player dashboard", _subtitle(md, team, half, pl))
         pitch = _pitch(th, line_zorder=3)
-        ax1 = fig.add_axes([0.02, 0.42, 0.46, 0.42])
+        # 1. passes
+        ax1 = fig.add_axes([0.02, 0.56, 0.36, 0.3])
         pitch.draw(ax=ax1)
+        p = ev[(ev["etype"] == "pass") & ev["end_x"].notna()]
         ok, ko = p[p["outcome"] == 1], p[p["outcome"] != 1]
         if len(ko):
             pitch.lines(ko["x"], ko["y"], ko["end_x"], ko["end_y"], comet=True, transparent=True, color=th.bad, lw=1.8, alpha_end=0.55, ax=ax1)
         if len(ok):
-            pitch.lines(ok["x"], ok["y"], ok["end_x"], ok["end_y"], comet=True, transparent=True,
-                        color=th.team, lw=2.2, ax=ax1)
+            pitch.lines(ok["x"], ok["y"], ok["end_x"], ok["end_y"], comet=True, transparent=True, color=th.team, lw=2.2, ax=ax1)
             pitch.scatter(ok["end_x"], ok["end_y"], s=18, color=th.team, ax=ax1, zorder=4)
-        ax1.set_title("PASSES", loc="left", fontsize=9, color=th.muted, fontweight="bold")
-        ax2 = fig.add_axes([0.5, 0.42, 0.46, 0.42])
+        ax1.set_title(f"PASSES  {len(ok)}/{len(p)}", loc="left", fontsize=9, color=th.muted, fontweight="bold")
+        _set_panel(fig, "Passes", ax1)
+        # 2. receptions + defending + losses
+        ax2 = fig.add_axes([0.40, 0.56, 0.36, 0.3])
         pitch.draw(ax=ax2)
-        t = ev[ev["etype"].isin(["pass", "receive", "carry", "dribble", "shot", "recovery", "interception", "tackle", "duel"])
-               & ev["x"].notna() & ~ev["derived"]]
-        if len(t) >= 3:
-            from scipy.ndimage import gaussian_filter
-            st = pitch.bin_statistic(t["x"], t["y"], statistic="count", bins=(30, 20), normalize=True)
-            st["statistic"] = gaussian_filter(st["statistic"], 1.4)
-            pitch.heatmap(st, ax=ax2, cmap=th.cmap(), edgecolors="none", zorder=0.6)
-        d = ev[ev["etype"].isin(["interception", "tackle", "recovery", "duel", "block", "clearance"]) & ev["x"].notna()]
-        pitch.scatter(d["x"], d["y"], s=34, marker="D", color=th.accent, edgecolors=th.bg, ax=ax2, zorder=5)
-        ax2.set_title("TOUCHES  (◆ defensive actions)", loc="left", fontsize=9, color=th.muted, fontweight="bold")
-        tab = M.player_table(md, team, half)
-        row = tab[tab["Player"] == f"#{player}"]
-        r = row.iloc[0] if len(row) else None
-        keys = ["Actions", "Passes", "Acc %", "Prog. passes", "Prog. carries", "Prog. received", "F3 entries", "Box entries",
-                "Line breaks", "Key passes", "Crosses", "Shots", "xG", "Def. actions", "Recoveries", "Losses"]
-        items = [(k, _fmt(r[k], 1 if k in ("Acc %",) else 2 if k == "xG" else 0) if r is not None else "–") for k in keys]
-        _kpis(fig, th, [0.03, 0.06, 0.94, 0.3], items, cols=8)
+        rec = pr["receptions"]
+        d = pr["defensive_events"]
+        d = d[d["x"].notna()]
+        lo = _losses(ev)
+        lo = lo[lo["x"].notna()]
+        pitch.scatter(rec["end_x"], rec["end_y"], s=34, color=th.team, alpha=0.7, ax=ax2, zorder=3)
+        pitch.scatter(d["x"], d["y"], s=44, marker="D", color=th.accent, edgecolors=th.bg, ax=ax2, zorder=4)
+        pitch.scatter(lo["x"], lo["y"], s=50, marker="X", color=th.bad, ax=ax2, zorder=5)
+        ax2.set_title("● RECEPTIONS   ◆ DEFENSIVE ACTIONS   ✕ BALL LOSSES", loc="left", fontsize=9, color=th.muted, fontweight="bold")
+        _set_panel(fig, "Receptions, defending & losses", ax2)
+        # 3. direction rose
+        axr = fig.add_axes([0.80, 0.57, 0.17, 0.27], projection="polar")
+        axr.set_facecolor(th.panel)
+        axr.set_theta_zero_location("N")
+        axr.set_theta_direction(1)
+        pa = p[p["angle"].notna()]
+        bins = np.linspace(-180, 180, 17)
+        cnt, _ = np.histogram(pa["angle"], bins=bins)
+        okc, _ = np.histogram(pa.loc[pa["outcome"] == 1, "angle"], bins=bins)
+        acc = np.divide(okc, cnt, out=np.zeros_like(okc, dtype=float), where=cnt > 0)
+        cmap = LinearSegmentedColormap.from_list("acc", [th.bad, th.accent, th.good])
+        axr.bar(np.radians((bins[:-1] + bins[1:]) / 2), cnt, width=np.radians(22.5) * 0.92, color=[cmap(a) for a in acc],
+                edgecolor=th.bg, linewidth=0.8)
+        axr.set_xticks(np.radians([0, 90, 180, 270]), ["FWD", "LEFT", "BACK", "RIGHT"], fontsize=7.5, color=th.muted)
+        axr.set_yticklabels([])
+        axr.grid(color=th.grid, lw=0.8)
+        axr.spines["polar"].set_color(th.grid)
+        axr.set_title("PASS DIRECTIONS", fontsize=9, color=th.muted, fontweight="bold", pad=10)
+        _set_panel(fig, "Pass directions", axr)
+        # 4. pass details
+        for k, (title, g, rect) in enumerate((("Pass type", pr["by_type"].head(6), [0.06, 0.32, 0.16, 0.18]),
+                                              ("Direction", pr["by_direction"], [0.30, 0.32, 0.14, 0.18]),
+                                              ("Length", pr["by_length"], [0.52, 0.36, 0.12, 0.12]))):
+            ax = fig.add_axes(rect)
+            if g.empty:
+                ax.set_axis_off()
+                continue
+            _hbar(ax, th, list(g.index), g["attempted"], g["completed"], th.team, title)
+            _set_panel(fig, "Pass details", ax)
+        # 5. comparison with the team
+        axc = fig.add_axes([0.80, 0.06, 0.18, 0.44])
+        cmpd = pr["comparison"]
+        if not cmpd.empty:
+            c = cmpd.iloc[::-1]
+            val = [(r["Player"] / r["Team best"] * 100 if r["Team best"] else 0) if r["Higher is better"]
+                   else (r["Team best"] / r["Player"] * 100 if r["Player"] else 100) for _, r in c.iterrows()]
+            avg = [(r["Team average"] / r["Team best"] * 100 if r["Team best"] else 0) if r["Higher is better"]
+                   else (r["Team best"] / r["Team average"] * 100 if r["Team average"] else 100) for _, r in c.iterrows()]
+            y = np.arange(len(c))
+            cols = [th.good if r["Rank"] <= max(1, r["Of"] // 4) else th.accent if r["Rank"] <= r["Of"] // 2 else th.team
+                    for _, r in c.iterrows()]
+            axc.barh(y, val, color=cols, height=0.62)
+            axc.scatter(avg, y, marker="|", s=220, color=th.text, zorder=3)
+            for yi, (_, r) in zip(y, c.iterrows()):
+                v = r["Player"]
+                axc.text(min(val[yi], 100) + 2, yi, f"{v:.2f}".rstrip("0").rstrip(".") + f"  #{int(r['Rank'])}/{int(r['Of'])}",
+                         va="center", fontsize=8, color=th.text)
+            axc.set_yticks(y, list(c["Metric"]), fontsize=8.5, color=th.text)
+            axc.set_xlim(0, 135)
+            axc.set_xticks([])
+            for s_ in ("top", "right", "bottom"):
+                axc.spines[s_].set_visible(False)
+            axc.spines["left"].set_color(th.grid)
+            axc.tick_params(length=0)
+            axc.set_title("VS TEAM  (bar = % of team best · | = team average · #rank)", loc="left", fontsize=8.5,
+                          color=th.muted, fontweight="bold")
+            _set_panel(fig, "Compared with the team", axc)
+        else:
+            axc.set_axis_off()
+        # 6. numbers
+        pa_, rc, ca, sh, de, lo_, cp = (pr["passing"], pr["receiving"], pr["carrying"], pr["shooting"], pr["defending"],
+                                        pr["losses"], pr["counterpress"])
+        items = [("Passes cmp/att", f"{pa_['Completed']}/{pa_['Passes']}"), ("Accuracy", _fmt(pa_["Accuracy %"], 0, True)),
+                 ("Progressive passes", _fmt(pa_["Progressive (completed)"])), ("Line breaks", _fmt(pa_["Line-breaking (completed)"])),
+                 ("Key passes", _fmt(pa_["Key passes"])), ("Final-third entries", _fmt(pa_["Final-third entries"])),
+                 ("Crosses", pa_["Crosses (cmp/att)"]), ("Forward passes", _fmt(pa_["Forward %"], 0, True)),
+                 ("Receptions", _fmt(rc["Receptions"])), ("Prog. receptions", _fmt(rc["Progressive receptions"])),
+                 ("Carries · progressive", f"{ca['Carries']} · {ca['Progressive carries']}"),
+                 ("Carry distance", _fmt(ca["Total distance (m)"]) + " m"),
+                 ("Defensive actions", _fmt(de["Defensive actions"])), ("Recoveries", _fmt(de["Recoveries"])),
+                 ("Duels won/lost", de["Duels won / lost"]), ("Ball losses", _fmt(lo_["Ball losses"]))]
+        if sh["Shots"]:
+            items += [("Shots · goals", f"{sh['Shots']} · {sh['Goals']}"), ("xG", _fmt(sh["xG"], 2))]
+        if cp:
+            items += [("First presser after loss", _fmt(cp["First presser after a team loss"])),
+                      ("His losses regained", f"{cp['…regained by the team']}/{cp['His open-play losses']}")]
+        kax = _kpis(fig, th, [0.03, 0.04, 0.62, 0.24], items, cols=6)
+        _set_panel(fig, "Numbers", kax)
     return fig
 
 
@@ -1528,7 +1605,6 @@ _PANEL_INDEX = {
     "phase_flow": {"Phase matrix": [0], "How possessions started": [1], "How possessions ended": [2]},
     "momentum": {"Final-third pressure": [0], "Passing rhythm": [1]},
     "sequences": {"Passes per sequence": [0], "Furthest third": [1], "Most involved": [2], "Summary": [3]},
-    "player": {"Passes": [0], "Touches": [1], "Stats": [2]},
 }
 
 

@@ -484,8 +484,93 @@ class MatchLabPage(Page):
         st.dataframe(tab, use_container_width=True, hide_index=True)
         st.download_button("Player table (CSV)", tab.to_csv(index=False).encode("utf-8"),
                            file_name=f"{team}_players.csv", mime="text/csv", key="ml_pl_csv")
-        pick = st.selectbox("Player dashboard", list(tab["Player"]), key="ml_pl_dash")
-        self._chart(dict(ctx, player=pick.lstrip("#")), "player")
+        labels = {f"{r['Player']} {names.get(r['Player'].lstrip('#'), '')}".strip(): r["Player"].lstrip("#")
+                  for _, r in tab.iterrows()}
+        pick = st.selectbox("Player dashboard", list(labels), key="ml_pl_dash")
+        self._player_dashboard(ctx, labels[pick])
+
+    def _player_dashboard(self, ctx: dict, pl: str) -> None:
+        """Interactive player dashboard: KPI cards, pass map, directions, receptions, defending + losses,
+        pass details, shots (when he has any) and comparison with the team. Every chart has hover."""
+        from fap.matchlab import interactive as IX
+        from fap.matchlab import player as PP
+        from fap.matchlab.charts import THEMES
+        md, team, half = ctx["md"], ctx["team"], ctx["half"]
+        th = THEMES[ctx["theme"]]
+        names = ctx.get("names") or {}
+        pr = PP.profile(md, team, pl, half)
+        cfg = {"displaylogo": False, "scrollZoom": True, "modeBarButtonsToRemove": ["lasso2d", "select2d", "toImage"]}
+        st.markdown(f"#### #{pl} {names.get(pl, '')}".rstrip())
+        pa, rc, ca, sh, de, lo = (pr["passing"], pr["receiving"], pr["carrying"], pr["shooting"], pr["defending"],
+                                  pr["losses"])
+        cards = [
+            C.metric_card_html("Passing", f"{pa['Completed']}/{pa['Passes']}", hint=f"{_fmt(pa['Accuracy %'], 0, True)} accurate · {_fmt(pa['Forward %'], 0, True)} forward"),
+            C.metric_card_html("Progression", f"{pa['Progressive (completed)']} + {ca['Progressive carries']}", hint="prog. passes + carries"),
+            C.metric_card_html("Received", str(rc["Receptions"]), hint=f"{rc['Progressive receptions']} progressive · {rc['In final third']} in final third"),
+            C.metric_card_html("Chance creation", f"{pa['Key passes']} · {pa['Final-third entries']}", hint="key passes · final-third entries"),
+            C.metric_card_html("Defending", str(de["Defensive actions"]), hint=f"{de['Recoveries']} recoveries · duels {de['Duels won / lost']}"),
+            C.metric_card_html("Ball losses", str(lo["Ball losses"]), hint=f"{lo['in defensive third']} in own third"),
+        ]
+        if sh["Shots"]:
+            cards.insert(4, C.metric_card_html("Shooting", f"{sh['Shots']} · {sh['Goals']}G", hint=f"xG {sh['xG']:.2f} · {sh['On target']} on target"))
+        C.render_metric_row(cards)
+
+        def show(fig, key):
+            st.plotly_chart(fig, use_container_width=True, key=f"ml_pd_{key}", theme=None, config=cfg)
+
+        c1, c2 = st.columns([1.55, 1])
+        with c1:
+            f = IX.pass_map(md, team, half=half, player=pl, theme=th, names=names)
+            f.update_layout(height=470)
+            show(f, "passes")
+        with c2:
+            show(IX.player_rose(md, team, pl, half=half, theme=th), "rose")
+        show(IX.player_breakdown(md, team, pl, half=half, theme=th), "breakdown")
+        c1, c2 = st.columns(2)
+        with c1:
+            show(IX.player_receptions(md, team, pl, half=half, theme=th, names=names), "receptions")
+        with c2:
+            show(IX.player_defence(md, team, pl, half=half, theme=th, names=names), "defence")
+        if sh["Shots"]:
+            c1, c2 = st.columns([1.2, 1])
+            with c1:
+                f = IX.shots(md, team, half=half, player=pl, theme=th, names=names)
+                f.update_layout(height=470)
+                show(f, "shots")
+            with c2:
+                st.markdown("**Shooting**")
+                st.dataframe(pd.DataFrame({"value": [(_fmt(v, 2) if isinstance(v, float) else str(v)) for v in sh.values()]},
+                                          index=list(sh.keys())), use_container_width=True)
+        show(IX.player_compare(md, team, pl, half=half, theme=th), "compare")
+
+        with st.expander("All numbers", expanded=False):
+            cc = st.columns(3)
+            blocks = [("Passing", pa), ("Receiving", rc), ("Carrying", ca), ("Defending", de), ("Ball losses", lo),
+                      ("Counter-press", pr["counterpress"])]
+            if sh["Shots"]:
+                blocks.insert(3, ("Shooting", sh))
+            for i, (title, d) in enumerate(blocks):
+                with cc[i % 3]:
+                    st.markdown(f"**{title}**")
+                    if d:
+                        st.dataframe(pd.DataFrame({"value": [(_fmt(v, 1) if isinstance(v, float) else str(v)) for v in d.values()]},
+                                                  index=list(d.keys())), use_container_width=True)
+            cc = st.columns(3)
+            with cc[0]:
+                st.markdown("**Passes to**")
+                st.dataframe(pr["to_whom"].rename(lambda k: f"#{k} {names.get(k, '')}".strip()).to_frame("passes"),
+                             use_container_width=True)
+            with cc[1]:
+                st.markdown("**Received from**")
+                st.dataframe(pr["from_whom"].rename(lambda k: f"#{k} {names.get(k, '')}".strip()).to_frame("passes"),
+                             use_container_width=True)
+            with cc[2]:
+                st.markdown("**On-ball actions by phase (%)**")
+                st.dataframe(pr["phases"].round(1).rename(columns={"him": "player", "team": "team"}), use_container_width=True)
+            st.markdown("**Compared with the team**")
+            st.dataframe(pr["comparison"].round(2), use_container_width=True, hide_index=True)
+        st.markdown("##### Report version (PNG)")
+        self._chart(dict(ctx, player=pl), "player")
 
     def _data_export(self, shell, can_edit: bool, md, aud: pd.DataFrame) -> None:
         from fap.matchlab import export as X

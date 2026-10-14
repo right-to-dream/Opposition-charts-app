@@ -377,3 +377,19 @@ def test_all_interactive_charts_build(md, proxy):
 def test_fallback_xg_penalty(proxy):
     pen = proxy.events[(proxy.events["etype"] == "shot") & proxy.events["set_piece_kind"].eq("penalty")]
     assert len(pen) == 1 and pen["xg"].iloc[0] > 0.5
+
+
+def test_player_profile_and_dashboard(proxy):
+    from fap.matchlab import interactive as IX
+    from fap.matchlab import player as PP
+    from fap.matchlab.charts import DARK
+    pr = PP.profile(proxy, "Masar", "33")
+    assert pr["passing"]["Passes"] == 2 and pr["passing"]["Completed"] == 2   # 2nd = conflicting labels, resolved
+    assert pr["by_direction"]["attempted"].sum() == 2
+    assert pr["shooting"]["Shots"] == 0
+    c = pr["comparison"]
+    assert not c.empty and {"Rank", "Of", "Team average"} <= set(c.columns)
+    for fn in (IX.player_rose, IX.player_breakdown, IX.player_compare):
+        assert fn(proxy, "Masar", "33", theme=DARK) is not None
+    assert IX.player_receptions(proxy, "Masar", "3", theme=DARK) is not None
+    assert IX.player_defence(proxy, "Masar", "33", theme=DARK) is not None
