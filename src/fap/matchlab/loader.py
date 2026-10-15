@@ -352,6 +352,12 @@ def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
 
     ev = ev.sort_values(["half", "t"], kind="stable").reset_index(drop=True)
     ev["outcome"] = [outcome_from(l, t) for l, t in zip(ev["labels"], ev["tag"])]
+    # "Fouls" tags carry who was fouled: Foul Won = this team WAS fouled (not a foul it committed);
+    # an "Offside" label on a foul tag is an offside.
+    is_foul = ev["etype"].eq("foul")
+    ev.loc[is_foul & ev["labels"].map(lambda l: "offside" in l), "etype"] = "offside"
+    ev.loc[ev["etype"].eq("foul") & ev["labels"].map(lambda l: "foul won" in l and "foul committed" not in l),
+           "etype"] = "foul_won"
     for lab in ("set piece", "transition", "build up", "regular play", "under pressure", "counter press"):
         ev["lab_" + lab.replace(" ", "_")] = ev["labels"].map(lambda ls, w=lab: w in ls)
 
@@ -472,7 +478,7 @@ def _infer_pass_ends(ev: pd.DataFrame, horizon_rows: int = 7, horizon_s: float =
                     ex[i], ey[i], src[i] = x[j], y[j], "receive"
                 receiver[i] = pl[j]
                 break
-            if not same and et[j] in _DEF_EVENTS | {"pass", "receive", "foul"}:
+            if not same and et[j] in _DEF_EVENTS | {"pass", "receive", "foul", "foul_won"}:
                 if not src[i]:
                     ex[i], ey[i], src[i] = x[j], y[j], "opponent"
                 break
@@ -513,7 +519,7 @@ def _add_carries(ev: pd.DataFrame, min_dist: float = 5.0, max_gap: float = 15.0)
         for j in range(i + 1, min(n, i + 4)):
             if tm[j] != tm[i] or half[j] != half[i] or t[j] - t[i] > max_gap:
                 break
-            if et[j] in ("press", "duel", "foul", "error"):
+            if et[j] in ("press", "duel", "foul", "foul_won", "error"):
                 continue
             if et[j] in ("pass", "shot", "dribble", "carry") and pl[j] == pl[i] and not np.isnan(x[j]):
                 d = float(np.hypot(x[j] - x[i], y[j] - y[i]))

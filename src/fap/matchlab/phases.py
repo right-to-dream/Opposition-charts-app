@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from fap.matchlab.metrics import DEF_ACTIONS, PITCH_L, _pct, in_box, ppda_mask
+from fap.matchlab.memo import per_match
 
 if TYPE_CHECKING:
     from fap.matchlab.loader import MatchData
@@ -62,6 +63,7 @@ def tag_phases(md: "MatchData") -> None:
 
 
 # ------------------------------------------------------------------ in-possession summary
+@per_match
 def in_possession_table(md: "MatchData", team: str, half: int | None = None) -> pd.DataFrame:
     ev = _scope(md, half)
     me = ev[(ev["team"] == team) & (ev["phase"] != "")]
@@ -106,6 +108,7 @@ def funnel(md: "MatchData", team: str, half: int | None = None, start: str = "al
     return stages
 
 
+@per_match
 def buildup_outcomes(md: "MatchData", team: str, half: int | None = None) -> dict:
     poss = _poss(md, team, half)
     if poss.empty:
@@ -123,6 +126,7 @@ def buildup_outcomes(md: "MatchData", team: str, half: int | None = None) -> dic
     }
 
 
+@per_match
 def transitions(md: "MatchData", team: str, half: int | None = None) -> dict:
     poss = _poss(md, team, half)
     if poss.empty:
@@ -143,6 +147,7 @@ def transitions(md: "MatchData", team: str, half: int | None = None) -> dict:
 
 
 # ------------------------------------------------------------------ out-of-possession summary
+@per_match
 def out_of_possession_table(md: "MatchData", team: str, half: int | None = None) -> pd.DataFrame:
     ev = _scope(md, half)
     me = ev[(ev["team"] == team) & (ev["def_phase"] != "")]
@@ -167,6 +172,7 @@ def out_of_possession_table(md: "MatchData", team: str, half: int | None = None)
     return pd.DataFrame(rows)
 
 
+@per_match
 def defending_kpis(md: "MatchData", team: str, half: int | None = None) -> dict:
     ev = _scope(md, half)
     opp = md.opponent(team)

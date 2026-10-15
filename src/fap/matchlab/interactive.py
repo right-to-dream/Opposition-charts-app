@@ -453,7 +453,7 @@ def shots(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DA
 
 # ------------------------------------------------------------------ defensive actions
 _DEF = {"interception": ("Interception", "circle"), "tackle": ("Tackle", "triangle-up"), "recovery": ("Recovery", "diamond"),
-        "duel": ("Duel", "square"), "foul": ("Foul", "x"), "block": ("Block", "cross"), "clearance": ("Clearance", "triangle-down"),
+        "duel": ("Duel", "square"), "foul": ("Foul committed", "x"), "block": ("Block", "cross"), "clearance": ("Clearance", "triangle-down"),
         "press": ("Press", "circle-open")}
 
 

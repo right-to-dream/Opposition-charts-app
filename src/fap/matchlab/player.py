@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from fap.matchlab.metrics import DEF_ACTIONS, THIRD_NAMES, _pct, in_box, player_table
+from fap.matchlab.memo import per_match
 
 if TYPE_CHECKING:
     from fap.matchlab.loader import MatchData
@@ -43,6 +44,7 @@ def _losses(g: pd.DataFrame) -> pd.DataFrame:
              | (g["etype"] == "ball_lost") | ((g["etype"] == "error") & g["labels"].map(lambda l: "ball lost" in l))]
 
 
+@per_match
 def profile(md: "MatchData", team: str, player: str, half: int | None = None) -> dict:
     player = str(player)
     ev = _scope(md, half)
@@ -143,6 +145,7 @@ def profile(md: "MatchData", team: str, player: str, half: int | None = None) ->
     return out
 
 
+@per_match
 def comparison(md: "MatchData", team: str, player: str, half: int | None = None, min_actions: int = 15) -> pd.DataFrame:
     """Player vs team average (team-mates with ≥ ``min_actions`` actions) and his rank among them."""
     tab = player_table(md, team, half)
@@ -167,6 +170,7 @@ def _won(g: pd.DataFrame) -> int:
     return int(g["labels"].map(lambda l: "won" in l).sum())
 
 
+@per_match
 def player_stats(md: "MatchData", team: str, half: int | None = None) -> pd.DataFrame:
     """One row per player: every defensive action type with its success, progressive actions,
     carries and dribbles. Success rates only where success is actually tagged."""

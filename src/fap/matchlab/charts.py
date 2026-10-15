@@ -759,7 +759,7 @@ def shot_map(md: MatchData, team: str, *, half=None, player=None, theme: Theme =
 
 # ======================================================================== DEFENDING
 _DEF_STYLE = {"interception": ("Interception", "o"), "tackle": ("Tackle", "^"), "recovery": ("Recovery", "D"),
-              "duel": ("Duel", "s"), "foul": ("Foul", "X"), "block": ("Block", "P"), "clearance": ("Clearance", "v"),
+              "duel": ("Duel", "s"), "foul": ("Foul committed", "X"), "block": ("Block", "P"), "clearance": ("Clearance", "v"),
               "press": ("Press", "o")}
 
 

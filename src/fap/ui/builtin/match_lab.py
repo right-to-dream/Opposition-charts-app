@@ -227,12 +227,14 @@ class MatchLabPage(Page):
             cc[1].caption(f"Excel export unavailable: {exc}")
         ctx = dict(sig=sig, md=md, team=team, half=half, player=player, theme=theme, dpi=int(dpi), names=names)
 
-        tabs = st.tabs(["Overview", "Passing", "Progression & attack", "Phases of play", "Defending",
+        tabs = st.tabs(["Overview", "Team analysis", "Passing", "Progression & attack", "Phases of play", "Defending",
                         "Territory", "Players", "Data & export"])
         with tabs[0]:
             self._chart(ctx, "comparison")
             self._chart(ctx, "momentum")
         with tabs[1]:
+            self._team_analysis(ctx)
+        with tabs[2]:
             from fap.matchlab.charts import PASS_FILTERS
             cc = st.columns([2, 1, 1])
             kind = cc[0].selectbox("Pass filter", list(PASS_FILTERS), format_func=lambda k: PASS_FILTERS[k][0],
@@ -250,13 +252,13 @@ class MatchLabPage(Page):
             self._chart(ctx, "pass_network", team_level=True, min_passes=int(mn), include_subs=subs)
             self._chart(ctx, "passing_matrix", team_level=True)
             self._breakdown_tables(md, team, half, player)
-        with tabs[2]:
+        with tabs[3]:
             self._chart(ctx, "progression")
             op = st.checkbox("Entries: open play only", value=True, key="ml_entries_op")
             self._chart(ctx, "entries", open_play_only=op)
             self._chart(ctx, "crosses")
             self._chart(ctx, "shots")
-        with tabs[3]:
+        with tabs[4]:
             self._phase_tables(md, team, half)
             self._chart(ctx, "phases_in", team_level=True)
             self._chart(ctx, "phases_out", team_level=True)
@@ -265,18 +267,18 @@ class MatchLabPage(Page):
             self._chart(ctx, "buildup", team_level=True, min_passes=int(mp))
             self._sequence_explorer(ctx)
             self._chart(ctx, "sequences", team_level=True)
-        with tabs[4]:
+        with tabs[5]:
             self._counterpress(ctx)
             pr = st.checkbox("Include presses", value=False, key="ml_def_press")
             self._chart(ctx, "defensive", include_press=pr)
             self._chart(ctx, "losses")
-        with tabs[5]:
+        with tabs[6]:
             style = st.radio("Heat map style", ["smooth", "zones"], horizontal=True, key="ml_heat_style",
                              format_func=lambda s: {"smooth": "Smooth density", "zones": "Positional zones"}[s])
             self._chart(ctx, "heatmap", style=style)
-        with tabs[6]:
-            self._players(ctx)
         with tabs[7]:
+            self._players(ctx)
+        with tabs[8]:
             self._data_export(shell, can_edit, md, aud)
             self._method(md, team)
 
@@ -371,6 +373,117 @@ class MatchLabPage(Page):
             cc[2].download_button("Download PNG", hi[2], file_name=fname, mime="image/png",
                                   key=f"ml_dl_{key}", use_container_width=True)
         st.divider()
+
+    # ---- team deep-dive ------------------------------------------------------
+    def _team_analysis(self, ctx: dict) -> None:
+        from fap.matchlab import interactive_team as XT
+        from fap.matchlab import team as T
+        from fap.matchlab.charts import THEMES
+        md, team, half = ctx["md"], ctx["team"], ctx["half"]
+        th = THEMES[ctx["theme"]]
+        names = ctx.get("names") or {}
+        cfg = {"displaylogo": False, "scrollZoom": True, "modeBarButtonsToRemove": ["lasso2d", "select2d", "toImage"]}
+
+        def show(fig, key):
+            st.plotly_chart(fig, use_container_width=True, key=f"ml_ta_{key}", theme=None, config=cfg)
+
+        def cards(items):
+            C.render_metric_row([C.metric_card_html(a, b, hint=c) for a, b, c in items])
+
+        sub = st.tabs(["Team stats", "Build-up", "Progression", "Final third"])
+        with sub[0]:
+            side = T.stats_side_by_side(md, half)
+            order = ["Possession", "Passing", "Attacking", "Duels", "Defending", "Discipline", "Set pieces", "Ball losses"]
+            cats = [c for c in order if c in set(side["Category"])]
+            st.caption("Both teams side by side. Every row shows the count and, where it has attempts, the success "
+                       "rate (e.g. duels won / duels decided). Hover a bar for the exact numbers.")
+            for i in range(0, len(cats), 2):
+                cc = st.columns(2)
+                for col, cat in zip(cc, cats[i:i + 2]):
+                    with col:
+                        show(XT.stats_category(side, cat, md.teams, theme=th), f"stats_{cat}")
+            with st.expander("Full statistics table", expanded=False):
+                st.dataframe(side.round(1), use_container_width=True, hide_index=True)
+                st.download_button("Team statistics (CSV)", side.round(2).to_csv(index=False).encode("utf-8-sig"),
+                                   file_name="team_statistics.csv", mime="text/csv", key="ml_ta_csv")
+        with sub[1]:
+            b = T.buildup(md, team, half)
+            bp = b["possessions"]
+            if bp.empty:
+                st.info("No possessions started in the own third.")
+            else:
+                ex = b.get("exits", pd.DataFrame())
+                gk = b["gk"]
+                cards([
+                    ("Build-up possessions", str(len(bp)), f"avg {bp['n_passes'].mean():.1f} passes · {bp['duration'].mean():.0f} s"),
+                    ("Left our third", f"{int((bp['max_x'] >= md.thirds[0]).sum())}/{len(bp)}",
+                     f"{(bp['max_x'] >= md.thirds[0]).mean() * 100:.0f}% of build-ups"),
+                    ("Reached final third", f"{int(bp['reached_f3'].sum())}/{len(bp)}", f"{bp['reached_f3'].mean() * 100:.0f}% · {int(bp['shot'].sum())} ended in a shot"),
+                    ("Lost in own third", str(len(b["losses"])), "ball losses before the halfway third"),
+                    ("Goalkeeper passes", f"{int((gk['outcome'] == 1).sum())}/{len(gk)}" if len(gk) else "–",
+                     f"{int((gk['length_class'] == 'Long').sum())} long" if len(gk) else ""),
+                ])
+                show(XT.buildup_exits(md, team, half=half, theme=th, names=names), "exits")
+                show(XT.buildup_flow(md, team, half=half, theme=th), "flow")
+                c1, c2 = st.columns(2)
+                with c1:
+                    show(XT.pass_pairs_network(md, team, b["passes"], "Passing in our own third", theme=th, names=names), "net")
+                with c2:
+                    show(XT.gk_distribution(md, team, half=half, theme=th, names=names), "gk")
+                c1, c2 = st.columns(2)
+                with c1:
+                    show(XT.zone_losses(md, team, b["losses"], "Ball losses in our own third", theme=th, names=names), "loss")
+                with c2:
+                    st.markdown("**Who starts the build-up**")
+                    stt = b["starters"].head(8)
+                    st.dataframe(pd.DataFrame({"Player": [f"#{k} {names.get(k, '')}".strip() for k in stt.index],
+                                               "Build-ups started": stt.values}), use_container_width=True, hide_index=True)
+                    st.markdown("**Top passing pairs in our third**")
+                    pr_ = b["pairs"].head(8)
+                    st.dataframe(pd.DataFrame({"From": [f"#{a} {names.get(a, '')}".strip() for a, _ in pr_.index],
+                                               "To": [f"#{c} {names.get(c, '')}".strip() for _, c in pr_.index],
+                                               "Passes": pr_.values}), use_container_width=True, hide_index=True)
+                    if not ex.empty:
+                        st.markdown("**Exits by method**")
+                        st.dataframe(ex.groupby("method")["success"].agg(exits="size", kept="sum").sort_values("exits", ascending=False),
+                                     use_container_width=True)
+        with sub[2]:
+            pr = T.progression(md, team, half)
+            mv, tt = pr["entries"], pr["time_to_f3"]
+            cards([
+                ("Final-third entries", f"{int(mv['success'].sum())}/{len(mv)}", f"{mv['success'].mean() * 100:.0f}% successful" if len(mv) else ""),
+                ("By carry", str(int((mv["method"] == "Carry").sum())), "entries carried in"),
+                ("Progressive actions", str(len(pr["prog_origins"])), "completed passes + carries"),
+                ("Switches of play", f"{int((pr['switches']['outcome'] == 1).sum())}/{len(pr['switches'])}", "completed / attempted"),
+                ("Time to final third", f"{tt['seconds'].median():.1f} s" if len(tt) else "–",
+                 f"median · {tt['passes'].median():.0f} passes" if len(tt) else ""),
+            ])
+            show(XT.f3_entry_routes(md, team, half=half, theme=th, names=names), "routes")
+            show(XT.entry_breakdown(md, team, half=half, theme=th, names=names), "entrybars")
+            c1, c2 = st.columns([1.4, 1])
+            with c1:
+                show(XT.progressive_origins(md, team, half=half, theme=th, names=names), "origins")
+            with c2:
+                show(XT.lines_broken(md, team, half=half, theme=th), "lines")
+            show(XT.time_to_final_third(md, team, half=half, theme=th), "speed")
+            show(XT.pass_pairs_network(md, team, pr["middle_passes"], "Passing in the middle third", theme=th, names=names), "midnet")
+        with sub[3]:
+            f3 = T.final_third(md, team, half)
+            sm = f3["summary"]
+            cards([(k, str(v), "") for k, v in list(sm.items())[:6]])
+            show(XT.f3_channels(md, team, half=half, theme=th), "channels")
+            c1, c2 = st.columns([1.4, 1])
+            with c1:
+                show(XT.chance_creation(md, team, half=half, theme=th, names=names), "chances")
+            with c2:
+                show(XT.shot_sources(md, team, half=half, theme=th), "sources")
+                show(XT.crosses_by_flank(md, team, half=half, theme=th), "crossflank")
+            c1, c2 = st.columns(2)
+            with c1:
+                show(XT.zone_losses(md, team, f3["losses"], "Ball losses in the final third", theme=th, names=names), "f3loss")
+            with c2:
+                f3p = f3["events"][f3["events"]["etype"] == "pass"]
+                show(XT.pass_pairs_network(md, team, f3p, "Passing in the final third", theme=th, names=names), "f3net")
 
     # ---- counter-press ------------------------------------------------------
     def _counterpress(self, ctx: dict) -> None:

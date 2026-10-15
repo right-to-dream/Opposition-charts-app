@@ -27,6 +27,7 @@ import pandas as pd
 
 from fap.matchlab.loader import PITCH_L, PITCH_W
 from fap.matchlab.metrics import third_of
+from fap.matchlab.memo import per_match
 
 if TYPE_CHECKING:
     from fap.matchlab.loader import MatchData
@@ -36,7 +37,7 @@ LATE_EXTRA = 4.0          # a counter-press may start up to this many seconds af
 TAG_GAP = 3.0             # opponent's first action this much later than ours = tagging gap
 _PRESSURE_FALLBACK = ("tackle", "duel", "interception", "foul", "block")
 _PRESSURE_ACTIONS = ("duel", "tackle")
-_DEAD = ("ball_out", "offside", "foul")
+_DEAD = ("ball_out", "offside", "foul", "foul_won")
 _RESTARTS = ("throw in", "corner", "goal kick", "free kick", "kick off", "penalty")
 _ON_BALL = ("pass", "carry", "dribble", "shot", "receive")
 CATEGORIES = ("Pressed & regained", "Pressed, not regained", "Regained without press", "Not pressed, not regained")
@@ -60,6 +61,7 @@ def _evidence(ev: pd.DataFrame, team: str, opp: str, h: int, t_from: float, t_to
     return out.sort_values("t", kind="stable")
 
 
+@per_match
 def analyse(md: "MatchData", team: str, window: float | None = None, half: int | None = None) -> pd.DataFrame:
     window = float(window or getattr(md, "cp_window", DEFAULT_WINDOW))
     ev = md.events
@@ -77,7 +79,7 @@ def analyse(md: "MatchData", team: str, window: float | None = None, half: int |
         if half is not None and p["half"] != half:
             continue
         own = ev[(ev["poss_id"] == p["poss_id"]) & (ev["team"] == team) & ev["x"].notna()
-                 & ~ev["etype"].isin(["press", "foul", "sub_in", "sub_out", "ball_out", "offside"])]
+                 & ~ev["etype"].isin(["press", "foul", "foul_won", "sub_in", "sub_out", "ball_out", "offside"])]
         their = ev[(ev["poss_id"] == q["poss_id"]) & (ev["team"] == q["team"]) & ev["x"].notna()]
         if own.empty or their.empty:
             continue

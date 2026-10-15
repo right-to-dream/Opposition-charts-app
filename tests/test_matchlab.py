@@ -409,3 +409,25 @@ def test_player_stats_leaders_and_compare(proxy):
     c = PP.compare_players(proxy, "Masar", ["33", "3"])
     assert {"33", "3", "Team best"} <= set(c.columns)
     assert IX.compare_radar(proxy, "Masar", ["33", "3"], theme=DARK).data
+
+
+def test_team_deep_dive(md, proxy):
+    from fap.matchlab import interactive_team as XT
+    from fap.matchlab import team as T
+    from fap.matchlab.charts import DARK
+    for m in (md, proxy):
+        side = T.stats_side_by_side(m)
+        assert {"Category", "Metric"} <= set(side.columns) and len(side) > 40
+        for cat in side["Category"].unique():
+            assert XT.stats_category(side, cat, m.teams, theme=DARK) is not None
+        team = m.teams[0]
+        for fn in (XT.buildup_exits, XT.buildup_flow, XT.gk_distribution, XT.f3_entry_routes, XT.entry_breakdown,
+                   XT.progressive_origins, XT.time_to_final_third, XT.lines_broken, XT.f3_channels, XT.chance_creation,
+                   XT.shot_sources, XT.crosses_by_flank):
+            assert fn(m, team, theme=DARK) is not None
+    # fouls: 'Foul Won' is not a foul committed
+    ev = proxy.events
+    st_ = T.team_stats(proxy, "Masar").set_index("Metric")
+    assert st_.at["Fouls committed", "Value"] == int((ev[(ev["team"] == "Masar")]["etype"] == "foul").sum())
+    side = T.team_stats(proxy, "Masar").set_index("Metric")
+    assert side.at["Passes", "Attempts"] == int(((ev["team"] == "Masar") & (ev["etype"] == "pass")).sum())

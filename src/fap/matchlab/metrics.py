@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from fap.matchlab.loader import PITCH_L, PITCH_W
+from fap.matchlab.memo import per_match
 
 if TYPE_CHECKING:
     from fap.matchlab.loader import MatchData
@@ -141,7 +142,7 @@ def enrich(md: "MatchData") -> None:
 
 # ------------------------------------------------------------------ possessions
 _CONTROL = {"pass", "carry", "dribble", "shot", "recovery"}
-_DEAD = {"ball_out", "foul", "offside", "half_start", "half_end"}
+_DEAD = {"ball_out", "foul", "foul_won", "offside", "half_start", "half_end"}
 
 
 def _is_control(et: str, outcome: float, labels: tuple) -> bool:
@@ -195,9 +196,9 @@ def _possessions(md: "MatchData") -> None:
             end_reason = "Shot"
         elif nxt is not None and nxt["etype"] in ("half_end", "half_start"):
             end_reason = "Half end"
-        elif g["etype"].isin(["ball_out", "foul", "offside"]).any():
+        elif g["etype"].isin(["ball_out", "foul", "foul_won", "offside"]).any():
             # the FIRST dead ball ends the possession (later presses etc. are tagged in the same id)
-            dead = g[g["etype"].isin(["ball_out", "foul", "offside"])].iloc[0]
+            dead = g[g["etype"].isin(["ball_out", "foul", "foul_won", "offside"])].iloc[0]
             end_reason = "Out of play" if dead["etype"] == "ball_out" else dead["tag"]
         else:
             end_reason = "Lost"
@@ -294,6 +295,7 @@ def _pct(a: float, b: float) -> float:
     return float(a) / float(b) * 100.0 if b else float("nan")
 
 
+@per_match
 def team_summary(md: "MatchData", team: str, half: int | None = None) -> dict:
     ev = md.events if half is None else md.events[md.events["half"] == half]
     opp = md.opponent(team)
@@ -336,6 +338,7 @@ def team_summary(md: "MatchData", team: str, half: int | None = None) -> dict:
     }
 
 
+@per_match
 def player_table(md: "MatchData", team: str, half: int | None = None) -> pd.DataFrame:
     ev = md.events if half is None else md.events[md.events["half"] == half]
     me = ev[(ev["team"] == team) & ev["player"].ne("") & ev["player"].ne("0")]
