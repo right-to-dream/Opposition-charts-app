@@ -486,8 +486,82 @@ class MatchLabPage(Page):
                            file_name=f"{team}_players.csv", mime="text/csv", key="ml_pl_csv")
         labels = {f"{r['Player']} {names.get(r['Player'].lstrip('#'), '')}".strip(): r["Player"].lstrip("#")
                   for _, r in tab.iterrows()}
-        pick = st.selectbox("Player dashboard", list(labels), key="ml_pl_dash")
+        st.divider()
+        self._leaderboards(ctx)
+        st.divider()
+        self._compare_players(ctx, labels)
+        st.divider()
+        st.markdown("### Player dashboard")
+        pick = st.selectbox("Player", list(labels), key="ml_pl_dash")
         self._player_dashboard(ctx, labels[pick])
+
+    def _leaderboards(self, ctx: dict) -> None:
+        from fap.matchlab import interactive as IX
+        from fap.matchlab import player as PP
+        from fap.matchlab.charts import THEMES
+        md, team, half = ctx["md"], ctx["team"], ctx["half"]
+        names = ctx.get("names") or {}
+        th = THEMES[ctx["theme"]]
+        stats = PP.player_stats(md, team, half)
+        if stats.empty:
+            return
+        st.markdown("### Leaders")
+        st.caption("Top players per action. Bar colour = success rate where the action has a tagged outcome "
+                   "(red → amber → green); hover a bar for the exact numbers.")
+        grp = st.radio("Category", list(PP.LEADERBOARDS), horizontal=True, key="ml_lead_grp",
+                       label_visibility="collapsed")
+        specs = PP.LEADERBOARDS[grp]
+        cfg = {"displaylogo": False, "displayModeBar": False}
+        for i in range(0, len(specs), 3):
+            cols = st.columns(3)
+            for col, (title, c, num, den) in zip(cols, specs[i:i + 3]):
+                with col:
+                    st.plotly_chart(IX.leaderboard(stats, title, c, num, den, theme=th, names=names),
+                                    use_container_width=True, key=f"ml_lead_{grp}_{c}", theme=None, config=cfg)
+        with st.expander("Full table (all players, all actions)", expanded=False):
+            show = stats.copy()
+            show.insert(1, "Name", show["player"].map(lambda p: names.get(p, "")))
+            show["player"] = "#" + show["player"]
+            st.dataframe(show.round(1), use_container_width=True, hide_index=True)
+            st.download_button("Leaders table (CSV)", show.round(2).to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"{team}_player_actions.csv", mime="text/csv", key="ml_lead_csv")
+
+    def _compare_players(self, ctx: dict, labels: dict) -> None:
+        from fap.matchlab import interactive as IX
+        from fap.matchlab import player as PP
+        from fap.matchlab.charts import THEMES
+        md, team, half = ctx["md"], ctx["team"], ctx["half"]
+        names = ctx.get("names") or {}
+        st.markdown("### Compare players")
+        opts = list(labels)
+        picked = st.multiselect("Players (2–4)", opts, default=opts[:2], max_selections=4, key="ml_cmp_pick")
+        if len(picked) < 2:
+            st.caption("Pick at least two players.")
+            return
+        ids = [labels[p] for p in picked]
+        st.plotly_chart(IX.compare_radar(md, team, ids, half=half, theme=THEMES[ctx["theme"]], names=names),
+                        use_container_width=True, key="ml_cmp_radar", theme=None,
+                        config={"displaylogo": False, "displayModeBar": False})
+        c = PP.compare_players(md, team, ids, half)
+        if c.empty:
+            return
+        table = c.set_index("Metric")[[str(i) for i in ids] + ["Team best"]]
+        table.columns = [f"#{i} {names.get(str(i), '')}".strip() for i in ids] + ["Team best"]
+        hib = c.set_index("Metric")["Higher is better"]
+
+        def best(row):
+            vals = row.iloc[:-1]
+            target = vals.max() if hib[row.name] else vals.min()
+            return ["font-weight:700; color:#2ed8a3" if (v == target and not pd.isna(v)) else "" for v in vals] + [""]
+
+        def num(v):
+            if pd.isna(v):
+                return "–"
+            return f"{v:.0f}" if float(v).is_integer() else f"{v:.1f}"
+
+        st.dataframe(table.style.apply(best, axis=1).format(num), use_container_width=True)
+        st.caption("Green = best of the selected players for that metric (for ball losses: fewest). "
+                   "Team best is among team-mates with ≥ 15 actions.")
 
     def _player_dashboard(self, ctx: dict, pl: str) -> None:
         """Interactive player dashboard: KPI cards, pass map, directions, receptions, defending + losses,

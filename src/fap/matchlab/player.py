@@ -160,3 +160,127 @@ def comparison(md: "MatchData", team: str, player: str, half: int | None = None,
         rows.append({"Metric": label, "Player": v, "Team average": float(vals.mean()), "Team best": float(vals.max() if higher else vals.min()),
                      "Rank": rank, "Of": int(vals.notna().sum()), "Higher is better": higher})
     return pd.DataFrame(rows)
+
+
+# ------------------------------------------------------------------ leaderboards & multi-player comparison
+def _won(g: pd.DataFrame) -> int:
+    return int(g["labels"].map(lambda l: "won" in l).sum())
+
+
+def player_stats(md: "MatchData", team: str, half: int | None = None) -> pd.DataFrame:
+    """One row per player: every defensive action type with its success, progressive actions,
+    carries and dribbles. Success rates only where success is actually tagged."""
+    ev = _scope(md, half)
+    me = ev[(ev["team"] == team) & ev["player"].ne("") & ev["player"].ne("0")]
+    passes = ev[(ev["team"] == team) & (ev["etype"] == "pass") & (ev["outcome"] == 1)]
+    rows = []
+    for pl, g in me.groupby("player"):
+        r: dict = {"player": pl}
+        tk = g[g["etype"] == "tackle"]
+        it = g[g["etype"] == "interception"]
+        du = g[g["etype"] == "duel"]
+        du_lost = int(du["labels"].map(lambda l: "lost" in l).sum())
+        pr = g[g["etype"] == "press"]
+        pr_tag = pr[pr["outcome"].notna()]
+        r.update({
+            "Tackles": len(tk), "Tackles won": _won(tk),
+            "Interceptions": len(it), "Interceptions won": _won(it),
+            "Duels": len(du), "Duels won": _won(du), "Duels decided": _won(du) + du_lost,
+            "Recoveries": int((g["etype"] == "recovery").sum()),
+            "Presses": len(pr), "Presses successful": int((pr_tag["outcome"] == 1).sum()), "Presses tagged": len(pr_tag),
+            "Blocks": int((g["etype"] == "block").sum()), "Clearances": int((g["etype"] == "clearance").sum()),
+            "Fouls": int((g["etype"] == "foul").sum()),
+        })
+        r["Defensive actions"] = int(g["etype"].isin(DEF_ACTIONS).sum())
+        p = g[g["etype"] == "pass"]
+        c = g[(g["etype"] == "carry") & g["end_x"].notna()]
+        r["Progressive passes"] = int((p["progressive"] & (p["outcome"] == 1)).sum())
+        r["Progressive carries"] = int(c["progressive"].sum())
+        r["Progressive receptions"] = int(passes[passes["receiver"] == pl]["progressive"].sum())
+        r["Progressive actions"] = r["Progressive passes"] + r["Progressive carries"] + r["Progressive receptions"]
+        r["Carries"] = len(c)
+        r["Carry distance (m)"] = round(float(c["length"].sum()), 1) if len(c) else 0.0
+        r["Carries into final third"] = int(c["f3_entry"].sum())
+        dr = g[g["etype"] == "dribble"]
+        r["Dribbles"] = len(dr)
+        r["Dribbles successful"] = int((dr["outcome"] == 1).sum())
+        r["Passes"] = len(p)
+        r["Passes completed"] = int((p["outcome"] == 1).sum())
+        r["Key passes"] = int(p["key_pass"].sum())
+        r["Shots"] = int((g["etype"] == "shot").sum())
+        r["xG"] = round(float(g["xg"].sum()), 2)
+        r["Ball losses"] = len(_losses(g))
+        r["Actions"] = int((~g["derived"].astype(bool)).sum())
+        rows.append(r)
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+
+    def pct(a, b):
+        return np.where(out[b] > 0, out[a] / out[b].where(out[b] > 0, 1) * 100, np.nan)
+
+    out["Tackle success %"] = pct("Tackles won", "Tackles")
+    out["Interception won %"] = pct("Interceptions won", "Interceptions")
+    out["Duel success %"] = pct("Duels won", "Duels decided")
+    out["Press success %"] = pct("Presses successful", "Presses tagged")
+    out["Dribble success %"] = pct("Dribbles successful", "Dribbles")
+    out["Pass accuracy %"] = pct("Passes completed", "Passes")
+    return out.sort_values("Actions", ascending=False).reset_index(drop=True)
+
+
+# leaderboard spec: (title, value column, success numerator, success denominator)
+LEADERBOARDS = {
+    "Defending": [
+        ("Defensive actions", "Defensive actions", None, None),
+        ("Tackles", "Tackles", "Tackles won", "Tackles"),
+        ("Interceptions (won · rest cleared)", "Interceptions", "Interceptions won", "Interceptions"),
+        ("Duels", "Duels", "Duels won", "Duels decided"),
+        ("Recoveries", "Recoveries", None, None),
+        ("Presses", "Presses", "Presses successful", "Presses tagged"),
+        ("Blocks", "Blocks", None, None),
+        ("Clearances", "Clearances", None, None),
+        ("Fouls committed", "Fouls", None, None),
+    ],
+    "Progression & ball carrying": [
+        ("Progressive actions (total)", "Progressive actions", None, None),
+        ("Progressive passes", "Progressive passes", None, None),
+        ("Progressive carries", "Progressive carries", None, None),
+        ("Progressive receptions", "Progressive receptions", None, None),
+        ("Carries", "Carries", None, None),
+        ("Carry distance (m)", "Carry distance (m)", None, None),
+        ("Dribbles", "Dribbles", "Dribbles successful", "Dribbles"),
+    ],
+}
+
+# comparison radar / table metrics: (label, column, higher is better)
+COMPARE_SET = [
+    ("Passes", "Passes", True), ("Pass accuracy %", "Pass accuracy %", True), ("Key passes", "Key passes", True),
+    ("Progressive passes", "Progressive passes", True), ("Progressive carries", "Progressive carries", True),
+    ("Progressive receptions", "Progressive receptions", True), ("Dribbles successful", "Dribbles successful", True),
+    ("Shots", "Shots", True), ("xG", "xG", True), ("Defensive actions", "Defensive actions", True),
+    ("Tackles won", "Tackles won", True), ("Interceptions won", "Interceptions won", True),
+    ("Duels won", "Duels won", True), ("Recoveries", "Recoveries", True), ("Ball losses", "Ball losses", False),
+]
+
+
+def compare_players(md: "MatchData", team: str, players: list, half: int | None = None,
+                    min_actions: int = 15) -> pd.DataFrame:
+    """Rows = metrics, columns = the chosen players (+ team best among team-mates with ≥ ``min_actions``
+    actions, so a substitute with one pass is never the 'best' pass accuracy)."""
+    st_ = player_stats(md, team, half)
+    if st_.empty:
+        return pd.DataFrame()
+    st_ = st_.set_index("player")
+    pool = st_[(st_["Actions"] >= min_actions) | st_.index.isin([str(p) for p in players])]
+    rows = []
+    for label, col, higher in COMPARE_SET:
+        if col not in st_.columns:
+            continue
+        vals = pd.to_numeric(pool[col], errors="coerce")
+        row = {"Metric": label, "Higher is better": higher,
+               "Team best": float(vals.max() if higher else vals.min()),
+               "Team worst": float(vals.min() if higher else vals.max())}
+        for p in players:
+            row[str(p)] = float(vals.get(str(p), np.nan))
+        rows.append(row)
+    return pd.DataFrame(rows)

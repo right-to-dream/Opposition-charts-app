@@ -393,3 +393,19 @@ def test_player_profile_and_dashboard(proxy):
         assert fn(proxy, "Masar", "33", theme=DARK) is not None
     assert IX.player_receptions(proxy, "Masar", "3", theme=DARK) is not None
     assert IX.player_defence(proxy, "Masar", "33", theme=DARK) is not None
+
+
+def test_player_stats_leaders_and_compare(proxy):
+    from fap.matchlab import interactive as IX
+    from fap.matchlab import player as PP
+    from fap.matchlab.charts import DARK
+    st_ = PP.player_stats(proxy, "Masar")
+    ev = proxy.events[(proxy.events["team"] == "Masar") & proxy.events["player"].ne("0") & proxy.events["player"].ne("")]
+    assert int(st_["Passes"].sum()) == int((ev["etype"] == "pass").sum())
+    for grp, specs in PP.LEADERBOARDS.items():
+        for title, col, num, den in specs:
+            assert col in st_.columns
+            assert IX.leaderboard(st_, title, col, num, den, theme=DARK) is not None
+    c = PP.compare_players(proxy, "Masar", ["33", "3"])
+    assert {"33", "3", "Team best"} <= set(c.columns)
+    assert IX.compare_radar(proxy, "Masar", ["33", "3"], theme=DARK).data

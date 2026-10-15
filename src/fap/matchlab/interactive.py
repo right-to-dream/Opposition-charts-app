@@ -1104,6 +1104,94 @@ def player_compare(md: MatchData, team: str, player: str, *, half=None, theme: T
     return fig
 
 
+# ------------------------------------------------------------------ leaderboards & player comparison
+def leaderboard(stats: pd.DataFrame, title: str, col: str, num: str | None = None, den: str | None = None, *,
+                theme: Theme = DARK, names: dict | None = None, top: int = 8) -> go.Figure:
+    """Top players for one metric; bar colour = success rate when the action has a tagged outcome."""
+    th, names = theme, names or {}
+    d = stats[stats[col] > 0].sort_values([col] + ([num] if num else []), ascending=False).head(top)
+    d = d.iloc[::-1]
+    labels = [_who(p, names) for p in d["player"]]
+    if num and den:
+        rate = np.where(d[den] > 0, d[num] / d[den].where(d[den] > 0, 1), np.nan)
+        cols = [_acc_color(th, r) if not np.isnan(r) else th.team for r in rate]
+        txt = [f"{v:g}  ·  {int(a)}/{int(b)} ({r * 100:.0f}%)" if b > 0 else f"{v:g}  ·  no outcome"
+               for v, a, b, r in zip(d[col], d[num], d[den], rate)]
+        hover = [f"<b>{lb}</b><br>{title}: {v:g}<br>Successful {int(a)} of {int(b)} with an outcome"
+                 + (f" · <b>{r * 100:.0f}%</b>" if b > 0 else "") for lb, v, a, b, r in zip(labels, d[col], d[num], d[den], rate)]
+    else:
+        cols = [th.team] * len(d)
+        txt = [f"{v:g}" for v in d[col]]
+        hover = [f"<b>{lb}</b><br>{title}: {v:g}" for lb, v in zip(labels, d[col])]
+    fig = go.Figure(go.Bar(y=labels, x=d[col], orientation="h", marker_color=cols, text=txt, textposition="outside",
+                           textfont=dict(color=th.muted, size=11), cliponaxis=False, hovertext=hover, hoverinfo="text"))
+    sub = "colour = success rate" if num else ""
+    fig.update_layout(
+        title=dict(text=f"<b>{title}</b>" + (f"<br><span style='font-size:11px;color:{th.muted}'>{sub}</span>" if sub else ""),
+                   x=0.02, font=dict(size=14, color=th.text)),
+        height=110 + 30 * max(len(d), 1), paper_bgcolor=th.bg, plot_bgcolor=th.bg, font=dict(color=th.text, size=11),
+        margin=dict(l=10, r=70, t=60 if sub else 45, b=10),
+        xaxis=dict(visible=False, range=[0, (d[col].max() if len(d) else 1) * 1.45]),
+        yaxis=dict(automargin=True), bargap=0.35,
+        hoverlabel=dict(bgcolor=th.panel, bordercolor=th.grid, font=dict(color=th.text), align="left"))
+    if d.empty:
+        fig.add_annotation(x=0.5, y=0.5, xref="paper", yref="paper", text="none in this match", showarrow=False,
+                           font=dict(color=th.muted))
+    return fig
+
+
+def _num(v, metric: str = "") -> str:
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return "–"
+    if metric == "xG":
+        return f"{v:.2f}"
+    if "%" in metric:
+        return f"{v:.0f}%"
+    return f"{v:.0f}" if float(v).is_integer() else f"{v:.1f}"
+
+
+def compare_radar(md: MatchData, team: str, players: list, *, half=None, theme: Theme = DARK,
+                  names: dict | None = None) -> go.Figure:
+    """2–4 players on one radar: each axis = % of the team's best (ball losses inverted)."""
+    from fap.matchlab.player import compare_players
+    th, names = theme, names or {}
+    c = compare_players(md, team, players, half)
+    fig = go.Figure()
+    if c.empty or not players:
+        return fig
+    palette = [th.team, th.accent, th.good, th.carry]
+    cats = list(c["Metric"])
+    for p, col in zip(players, palette):
+        p = str(p)
+        vals, hov = [], []
+        for _, r in c.iterrows():
+            v, best, hi = r[p], r["Team best"], r["Higher is better"]
+            if np.isnan(v):
+                pct = 0.0
+            elif hi:
+                pct = v / best * 100 if best else 0.0
+            else:                                            # fewer is better: worst → 0, best → 100
+                worst = r["Team worst"]
+                pct = 100.0 if worst == best else (worst - v) / (worst - best) * 100
+            vals.append(min(pct, 100.0))
+            m = r["Metric"]
+            others = " · ".join(f"{_who(q, names)} {_num(r[str(q)], m)}" for q in players if str(q) != p and not np.isnan(r[str(q)]))
+            hov.append(f"<b>{_who(p, names)}</b> — {m}: <b>{_num(v, m)}</b><br>team best {_num(best, m)}"
+                       f"{'' if hi else ' (fewer is better)'}<br>{others}")
+        fig.add_trace(go.Scatterpolar(r=vals + vals[:1], theta=cats + cats[:1], name=_who(p, names), fill="toself",
+                                      line=dict(color=col, width=2), opacity=0.55, hovertext=hov + hov[:1], hoverinfo="text"))
+    fig.update_layout(
+        title=dict(text=f"<b>Player comparison</b><br><span style='font-size:11px;color:{th.muted}'>"
+                        f"each axis = % of the team's best · ball losses: team's most = 0, fewest = 100</span>",
+                   x=0.01, font=dict(size=15, color=th.text)),
+        height=560, paper_bgcolor=th.bg, font=dict(color=th.text, size=11), margin=dict(l=70, r=70, t=80, b=40),
+        polar=dict(bgcolor=th.panel, radialaxis=dict(range=[0, 100], showticklabels=False, gridcolor=th.grid),
+                   angularaxis=dict(gridcolor=th.grid, color=th.text)),
+        legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center", font=dict(color=th.text)),
+        hoverlabel=dict(bgcolor=th.panel, bordercolor=th.grid, font=dict(color=th.text), align="left"))
+    return fig
+
+
 INTERACTIVE = {"counterpress": counterpress, "pass_map": pass_map, "pass_map_halves": pass_map_halves,
                "progression": progression, "entries": entries, "crosses": crosses, "shots": shots,
                "defensive": defensive, "losses": losses, "sequence": sequence, "pass_network": network,
