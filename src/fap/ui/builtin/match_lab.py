@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import re
 
 import pandas as pd
 import streamlit as st
@@ -382,14 +383,54 @@ class MatchLabPage(Page):
         md, team, half = ctx["md"], ctx["team"], ctx["half"]
         th = THEMES[ctx["theme"]]
         names = ctx.get("names") or {}
-        cfg = {"displaylogo": False, "scrollZoom": True, "modeBarButtonsToRemove": ["lasso2d", "select2d", "toImage"]}
+        half_tag = {None: "", 1: "_1H", 2: "_2H"}.get(half, "")
+        bucket: list = []                     # (filename, html) of the current sub-tab, for "download all"
 
         def show(fig, key):
+            """Interactive chart + its downloads: camera icon = PNG (3× resolution, report quality),
+            button = interactive HTML (hover kept)."""
+            title = re.sub(r"<[^>]+>", "", (fig.layout.title.text or key).split("<br>")[0]).strip() or key
+            fname = re.sub(r"[^A-Za-z0-9]+", "_", f"{team}_{title}{half_tag}").strip("_")
+            cfg = {"displaylogo": False, "scrollZoom": True, "displayModeBar": True,
+                   "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                   "toImageButtonOptions": {"format": "png", "scale": 3, "filename": fname}}
             st.plotly_chart(fig, use_container_width=True, key=f"ml_ta_{key}", theme=None, config=cfg)
+            html = fig.to_html(include_plotlyjs="cdn", full_html=True, config=cfg)
+            st.download_button("Download chart (interactive HTML)", html.encode("utf-8"), file_name=f"{fname}.html",
+                               mime="text/html", key=f"ml_ta_dl_{key}")
+            bucket.append((fname, fig, cfg))
+
+        def download_all(section: str):
+            """ZIP of the section's charts, built only on request (keeps page refreshes fast)."""
+            if not bucket:
+                return
+            st.divider()
+            zkey = f"_ml_zip_{section}"
+            stamp = (ctx["sig"], team, half, ctx["theme"])
+            c1, c2 = st.columns([1, 1])
+            if c1.button(f"Prepare all {section} charts (ZIP)", key=f"ml_ta_zipprep_{section}", use_container_width=True):
+                import zipfile
+                from plotly.offline import get_plotlyjs
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                    for name, f, c in bucket:             # offline: every chart uses the bundled plotly.min.js
+                        z.writestr(f"{name}.html", f.to_html(include_plotlyjs="directory", full_html=True, config=c))
+                    z.writestr("plotly.min.js", get_plotlyjs())
+                st.session_state[zkey] = (stamp, buf.getvalue())
+            got = st.session_state.get(zkey)
+            if got and got[0] == stamp:
+                c2.download_button(f"Download {section} ZIP (works offline)", got[1],
+                                   file_name=re.sub(r"[^A-Za-z0-9]+", "_", f"{team}_{section}{half_tag}") + ".zip",
+                                   mime="application/zip", key=f"ml_ta_zip_{section}", type="primary",
+                                   use_container_width=True)
+            bucket.clear()
 
         def cards(items):
             C.render_metric_row([C.metric_card_html(a, b, hint=c) for a, b, c in items])
 
+        st.caption("Download: the camera icon at the top-right of every chart saves it as a high-resolution PNG "
+                   "(for reports); the button under it saves an interactive HTML file (hover kept); each section "
+                   "ends with a ZIP of all its charts.")
         sub = st.tabs(["Team stats", "Build-up", "Progression", "Final third"])
         with sub[0]:
             side = T.stats_side_by_side(md, half)
@@ -406,6 +447,7 @@ class MatchLabPage(Page):
                 st.dataframe(side.round(1), use_container_width=True, hide_index=True)
                 st.download_button("Team statistics (CSV)", side.round(2).to_csv(index=False).encode("utf-8-sig"),
                                    file_name="team_statistics.csv", mime="text/csv", key="ml_ta_csv")
+            download_all("Team stats")
         with sub[1]:
             b = T.buildup(md, team, half)
             bp = b["possessions"]
@@ -447,6 +489,7 @@ class MatchLabPage(Page):
                         st.markdown("**Exits by method**")
                         st.dataframe(ex.groupby("method")["success"].agg(exits="size", kept="sum").sort_values("exits", ascending=False),
                                      use_container_width=True)
+            download_all("Build-up")
         with sub[2]:
             pr = T.progression(md, team, half)
             mv, tt = pr["entries"], pr["time_to_f3"]
@@ -467,6 +510,7 @@ class MatchLabPage(Page):
                 show(XT.lines_broken(md, team, half=half, theme=th), "lines")
             show(XT.time_to_final_third(md, team, half=half, theme=th), "speed")
             show(XT.pass_pairs_network(md, team, pr["middle_passes"], "Passing in the middle third", theme=th, names=names), "midnet")
+            download_all("Progression")
         with sub[3]:
             f3 = T.final_third(md, team, half)
             sm = f3["summary"]
@@ -484,6 +528,7 @@ class MatchLabPage(Page):
             with c2:
                 f3p = f3["events"][f3["events"]["etype"] == "pass"]
                 show(XT.pass_pairs_network(md, team, f3p, "Passing in the final third", theme=th, names=names), "f3net")
+            download_all("Final third")
 
     # ---- counter-press ------------------------------------------------------
     def _counterpress(self, ctx: dict) -> None:
