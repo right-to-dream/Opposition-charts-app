@@ -35,6 +35,7 @@ SIX_Y = (PITCH_W / 2 - 9.16, PITCH_W / 2 + 9.16)
 CHANNEL_EDGES = (0.0, BOX_Y[0], SIX_Y[0], SIX_Y[1], BOX_Y[1], PITCH_W)
 CHANNELS = ("Right flank", "Right half-space", "Centre", "Left half-space", "Left flank")
 THIRD_NAMES = ("Defensive third", "Middle third", "Final third")
+SWITCH_MIN_M = 30.0        # lateral distance of a switch of play (flank / half-space to the opposite side)
 
 SET_PIECE_KINDS = ("corner", "free kick", "throw in", "goal kick", "penalty", "kick off")
 DEF_ACTIONS = ("tackle", "interception", "recovery", "block", "clearance", "duel", "foul", "press")
@@ -107,7 +108,11 @@ def enrich(md: "MatchData") -> None:
     ev["end_channel"] = channel_of(ev["end_y"])
     ev["f3_entry"] = (ev["x"] < THIRDS[1]) & (ev["end_x"] >= THIRDS[1])
     ev["box_entry"] = in_box(ev["end_x"], ev["end_y"]) & ~in_box(ev["x"], ev["y"])
-    ev["switch"] = (dy.abs() >= 30) & ev["etype"].eq("pass")
+    # switch of play: a pass that travels >= 30 m across AND goes from one side of the pitch to the other —
+    # it starts outside the central lane on one side and ends outside it on the opposite side
+    side0 = np.select([ev["y"] < CHANNEL_EDGES[2], ev["y"] > CHANNEL_EDGES[3]], [-1, 1], 0)
+    side1 = np.select([ev["end_y"] < CHANNEL_EDGES[2], ev["end_y"] > CHANNEL_EDGES[3]], [-1, 1], 0)
+    ev["switch"] = (dy.abs() >= SWITCH_MIN_M) & ev["etype"].eq("pass") & (side0 * side1 == -1)
 
     is_pass = ev["etype"].eq("pass").to_numpy()
     ev["cross"] = _has(labels, "cross") & is_pass

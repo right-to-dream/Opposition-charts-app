@@ -230,7 +230,7 @@ class MatchLabPage(Page):
         ctx = dict(sig=sig, md=md, team=team, half=half, player=player, theme=theme, dpi=int(dpi), names=names)
 
         tabs = st.tabs(["Overview", "Team analysis", "Passing", "Progression & attack", "Phases of play", "Defending",
-                        "Territory", "Players", "Data & export"])
+                        "Heat maps", "Players", "Data & export"])
         with tabs[0]:
             self._chart(ctx, "comparison")
             self._chart(ctx, "momentum")
@@ -256,6 +256,7 @@ class MatchLabPage(Page):
             self._breakdown_tables(md, team, half, player)
         with tabs[3]:
             self._chart(ctx, "progression")
+            self._chart(ctx, "switches")
             op = st.checkbox("Entries: open play only", value=True, key="ml_entries_op")
             self._chart(ctx, "entries", open_play_only=op)
             self._chart(ctx, "crosses")
@@ -275,9 +276,7 @@ class MatchLabPage(Page):
             self._chart(ctx, "defensive", include_press=pr)
             self._chart(ctx, "losses")
         with tabs[6]:
-            style = st.radio("Heat map style", ["smooth", "zones"], horizontal=True, key="ml_heat_style",
-                             format_func=lambda s: {"smooth": "Smooth density", "zones": "Positional zones"}[s])
-            self._chart(ctx, "heatmap", style=style)
+            self._heat_maps(ctx)
         with tabs[7]:
             self._players(ctx)
         with tabs[8]:
@@ -331,6 +330,7 @@ class MatchLabPage(Page):
     def _chart(self, ctx: dict, key: str, team_level: bool = False, **opts) -> None:
         from fap.matchlab.charts import CHART_BY_KEY
         spec = CHART_BY_KEY[key]
+        uid = opts.pop("_uid", key)               # widget-key namespace when one chart appears several times
         player = None if team_level else ctx["player"]
         args = (ctx["sig"], key, ctx["team"], ctx["half"], player, ctx["theme"], tuple(sorted(opts.items())))
         try:
@@ -351,9 +351,9 @@ class MatchLabPage(Page):
                 if isinstance(fig, list):
                     for i, (col, f) in enumerate(zip(st.columns(len(fig)), fig)):
                         f.update_layout(height=470)
-                        col.plotly_chart(f, use_container_width=True, key=f"ml_ix_{key}_{i}", theme=None, config=cfg)
+                        col.plotly_chart(f, use_container_width=True, key=f"ml_ix_{uid}_{i}", theme=None, config=cfg)
                 else:
-                    st.plotly_chart(fig, use_container_width=True, key=f"ml_ix_{key}", theme=None, config=cfg)
+                    st.plotly_chart(fig, use_container_width=True, key=f"ml_ix_{uid}", theme=None, config=cfg)
                 st.caption("Interactive: hover any point for details · drag to zoom, double-click to reset · "
                            "click a legend item to hide / show it. The PNG download below is the report version.")
                 shown = True
@@ -362,19 +362,42 @@ class MatchLabPage(Page):
         if not shown:
             st.image(png, use_container_width=True)
         cc = st.columns([2, 1.3, 1.3])
-        part = cc[0].selectbox("Download", ["Whole chart"] + panels, key=f"ml_part_{key}",
+        part = cc[0].selectbox("Download", ["Whole chart"] + panels, key=f"ml_part_{uid}",
                                label_visibility="collapsed",
                                help="Download the whole chart, or only one part of it (pitch, table, bars ...)")
         panel = None if part == "Whole chart" else part
-        base = f"{ctx['team']}_{key}{'_' + str(ctx['half']) + 'H' if ctx['half'] else ''}{'_' + player if player else ''}"
+        base = f"{ctx['team']}_{uid}{'_' + str(ctx['half']) + 'H' if ctx['half'] else ''}{'_' + player if player else ''}"
         fname = f"{base}{'_' + panel if panel else ''}_{ctx['theme'].lower()}.png".replace(" ", "_").replace("#", "")
-        if cc[1].button(f"Prepare PNG ({ctx['dpi']} dpi)", key=f"ml_prep_{key}", use_container_width=True):
-            st.session_state[f"_ml_hi_{key}"] = (args, panel, _png(*args, ctx["dpi"], ctx["md"], panel)[0])
-        hi = st.session_state.get(f"_ml_hi_{key}")
+        if cc[1].button(f"Prepare PNG ({ctx['dpi']} dpi)", key=f"ml_prep_{uid}", use_container_width=True):
+            st.session_state[f"_ml_hi_{uid}"] = (args, panel, _png(*args, ctx["dpi"], ctx["md"], panel)[0])
+        hi = st.session_state.get(f"_ml_hi_{uid}")
         if hi and hi[0] == args and hi[1] == panel:
             cc[2].download_button("Download PNG", hi[2], file_name=fname, mime="image/png",
-                                  key=f"ml_dl_{key}", use_container_width=True)
+                                  key=f"ml_dl_{uid}", use_container_width=True)
         st.divider()
+
+    # ---- heat maps ------------------------------------------------------------
+    def _heat_maps(self, ctx: dict) -> None:
+        from fap.matchlab import heat as HT
+        md, team = ctx["md"], ctx["team"]
+        opp = md.opponent(team)
+        c = st.columns([1.6, 1.7, 1.4])
+        kind = c[0].selectbox("Heat map", list(HT.KINDS), format_func=lambda k: HT.KINDS[k][0], key="ml_heat_kind")
+        view = c[1].radio("Team", [team, opp, "Both teams"], horizontal=True, key="ml_heat_view")
+        style = c[2].radio("Style", ["smooth", "zones"], horizontal=True, key="ml_heat_style",
+                           format_func=lambda s: {"smooth": "Smooth density", "zones": "Positional zones"}[s])
+        st.caption(f"{HT.KINDS[kind][0]}: {HT.KINDS[kind][1]}. Every map reads left → right in that team's attacking "
+                   "direction. Zones = 3 thirds × 5 lanes (hover a zone for the players).")
+        if view == "Both teams":
+            self._chart(ctx, "heat_compare", team_level=True, style=style, kind=kind, _uid=f"heatcmp_{kind}")
+        else:
+            c2 = ctx if view == team else dict(ctx, team=opp, player=None)
+            self._chart(c2, "heatmap", style=style, kind=kind, _uid=f"heat_{kind}_{'us' if view == team else 'opp'}")
+        st.markdown("#### All heat maps on one page")
+        who = st.radio("Sheet for", [team, opp], horizontal=True, key="ml_heat_sheet_team")
+        c3 = ctx if who == team else dict(ctx, team=opp, player=None)
+        self._chart(c3, "heat_sheet", team_level=who != team, style=style,
+                    _uid=f"heatsheet_{'us' if who == team else 'opp'}")
 
     # ---- team deep-dive ------------------------------------------------------
     def _team_analysis(self, ctx: dict) -> None:
@@ -530,6 +553,8 @@ class MatchLabPage(Page):
                 show(XT.progressive_origins(md, team, half=half, theme=th, names=names), "origins", w=900)
             with c2:
                 show(XT.lines_broken(md, team, half=half, theme=th), "lines", w=900)
+            from fap.matchlab import interactive as IX
+            show(IX.switches(md, team, half=half, theme=th, names=names), "switches")
             show(XT.time_to_final_third(md, team, half=half, theme=th), "speed")
             show(XT.pass_pairs_network(md, team, pr["middle_passes"], "Passing in the middle third", theme=th, names=names), "midnet")
             download_all("Progression")

@@ -431,3 +431,31 @@ def test_team_deep_dive(md, proxy):
     assert st_.at["Fouls committed", "Value"] == int((ev[(ev["team"] == "Masar")]["etype"] == "foul").sum())
     side = T.team_stats(proxy, "Masar").set_index("Metric")
     assert side.at["Passes", "Attempts"] == int(((ev["team"] == "Masar") & (ev["etype"] == "pass")).sum())
+
+
+def test_switch_definition_side_to_side():
+    ev = pd.DataFrame({"x": [50.0] * 4, "y": [10.0, 30.0, 10.0, 60.0], "end_x": [60.0] * 4,
+                       "end_y": [58.0, 66.0, 38.0, 20.0]})
+    from fap.matchlab.metrics import CHANNEL_EDGES, SWITCH_MIN_M
+    lo, hi = CHANNEL_EDGES[2], CHANNEL_EDGES[3]
+    side = lambda v: -1 if v < lo else 1 if v > hi else 0  # noqa: E731
+    want = [abs(b - a) >= SWITCH_MIN_M and side(a) * side(b) == -1 for a, b in zip(ev["y"], ev["end_y"])]
+    assert want == [True, False, False, True]      # from the centre / ending central are not switches
+
+
+def test_heat_kinds_and_new_charts(md):
+    from fap.matchlab import charts as CH
+    from fap.matchlab import heat as HT
+    from fap.matchlab import interactive as IX
+    team = md.teams[0]
+    for k in HT.KINDS:
+        pts = HT.points(md, team, k)
+        assert pts["x"].notna().all()
+    assert set(HT.points(md, team, "losses").index) <= set(md.events.index)
+    for key, kw in (("switches", {}), ("heat_sheet", {}), ("heat_compare", {"kind": "regains"}),
+                    ("heatmap", {"kind": "press", "style": "zones"})):
+        CH.to_png(CH.render(key, md, team, **kw), dpi=30)
+    assert len(IX.build("heat_compare", md, team, kind="passes")) == 2
+    IX.build("switches", md, team)
+    sw = md.events[md.events["switch"]]
+    assert (sw["etype"] == "pass").all() and ((sw["end_y"] - sw["y"]).abs() >= 30).all()

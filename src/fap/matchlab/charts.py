@@ -586,41 +586,147 @@ def passing_matrix(md: MatchData, team: str, *, half=None, player=None, theme: T
 
 
 # ======================================================================== TERRITORY
+def _heat_draw(ax, pitch, th: Theme, ev: pd.DataFrame, style: str = "smooth", label_zones: bool = True,
+               bins=(42, 28), sigma: float = 1.6) -> None:
+    if ev.empty:
+        _empty(ax, th, "No events")
+        return
+    if style == "zones":
+        st = pitch.bin_statistic_positional(ev["x"], ev["y"], statistic="count", positional="full", normalize=True)
+        pitch.heatmap_positional(st, ax=ax, cmap=th.cmap(), edgecolors=th.bg, lw=1.5)
+        if label_zones:
+            pitch.label_heatmap(st, ax=ax, str_format="{:.0%}", color=th.text, fontsize=10, fontweight="bold",
+                                ha="center", va="center", exclude_zeros=True, path_effects=[])
+    else:
+        from scipy.ndimage import gaussian_filter
+        st = pitch.bin_statistic(ev["x"], ev["y"], statistic="count", bins=bins, normalize=True)
+        st["statistic"] = gaussian_filter(st["statistic"], sigma)
+        pitch.heatmap(st, ax=ax, cmap=th.cmap(), edgecolors="none", zorder=0.6)
+
+
 def touch_heatmap(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK,
-                  style: str = "smooth") -> plt.Figure:
+                  style: str = "smooth", kind: str = "activity") -> plt.Figure:
+    from fap.matchlab import heat as HT
     th = theme
+    label, desc = HT.KINDS[kind]
     with plt.rc_context(_rc(th)):
-        ev = _scope(md, team, half, player)
-        ev = ev[ev["etype"].isin(["pass", "receive", "carry", "dribble", "shot", "recovery", "interception", "tackle", "duel"])
-                & ev["x"].notna() & ~ev["derived"]]
-        fig = _figure(th, (14, 8.6), f"{team} — {'Touch' if player else 'Activity'} heat map",
-                      _subtitle(md, team, half, player, f"{len(ev)} on-ball & defensive actions"),
+        ev = HT.points(md, team, kind, half, player)
+        title = f"{team} — {'Touch' if player and kind == 'activity' else label} heat map"
+        fig = _figure(th, (14, 8.6), title, _subtitle(md, team, half, player, f"{len(ev)} events · {desc}"),
                       "Positional zones: 5 channels × thirds/halves" if style == "zones" else "Gaussian-smoothed density")
         ax = fig.add_axes([0.03, 0.1, 0.8, 0.76])
         pitch = _pitch(th, line_zorder=3)
         pitch.draw(ax=ax)
-        if len(ev):
-            if style == "zones":
-                st = pitch.bin_statistic_positional(ev["x"], ev["y"], statistic="count", positional="full", normalize=True)
-                pitch.heatmap_positional(st, ax=ax, cmap=th.cmap(), edgecolors=th.bg, lw=1.5)
-                pitch.label_heatmap(st, ax=ax, str_format="{:.0%}", color=th.text, fontsize=10, fontweight="bold",
-                                    ha="center", va="center", exclude_zeros=True,
-                                    path_effects=[])
-            else:
-                from scipy.ndimage import gaussian_filter
-                st = pitch.bin_statistic(ev["x"], ev["y"], statistic="count", bins=(42, 28), normalize=True)
-                st["statistic"] = gaussian_filter(st["statistic"], 1.6)
-                pitch.heatmap(st, ax=ax, cmap=th.cmap(), edgecolors="none", zorder=0.6)
-        else:
-            _empty(ax, th)
+        _heat_draw(ax, pitch, th, ev, style)
         _attack_arrow(ax, th)
-        # third / channel shares
         if len(ev):
             thirds = pd.Series(M.third_of(ev["x"])).value_counts(normalize=True).reindex(M.THIRD_NAMES).fillna(0)
             chans = pd.Series(M.channel_of(ev["y"])).value_counts(normalize=True).reindex(M.CHANNELS[::-1]).fillna(0)
             items = [(f"{k}", f"{v * 100:.0f}%") for k, v in thirds.items()] + \
                     [(f"{k}", f"{v * 100:.0f}%") for k, v in chans.items()]
             _kpis(fig, th, [0.845, 0.1, 0.13, 0.76], items, title="Share")
+    return fig
+
+
+def heat_sheet(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK,
+               style: str = "smooth") -> plt.Figure:
+    """Every key heat map of one team on one page (small multiples) — for reports."""
+    from fap.matchlab import heat as HT
+    th = theme
+    with plt.rc_context(_rc(th)):
+        fig = _figure(th, (20, 10.4), f"{team} — Heat maps", _subtitle(md, team, half, player,
+                      "where it happens · each map scaled to its own peak"), "Attacking left → right in every map")
+        cols = 4
+        w, h = 0.235, 0.36
+        for i, kind in enumerate(HT.SHEET):
+            r, c = divmod(i, cols)
+            ax = fig.add_axes([0.02 + c * 0.245, 0.47 - r * 0.43, w, h])
+            pitch = _pitch(th, line_zorder=3)
+            pitch.draw(ax=ax)
+            ev = HT.points(md, team, kind, half, player)
+            _heat_draw(ax, pitch, th, ev, style, label_zones=False, bins=(52, 34), sigma=2.0)
+            label, _ = HT.KINDS[kind]
+            ax.set_title(f"{label.upper()}  ·  {len(ev)}", loc="left", fontsize=10.5, color=th.text, fontweight="bold",
+                         pad=4)
+            if len(ev):
+                share = (ev["x"] >= md.thirds[1]).mean() * 100
+                ax.text(0.99, -0.03, f"{share:.0f}% in final third", transform=ax.transAxes, ha="right", va="top",
+                        fontsize=8, color=th.muted)
+    return fig
+
+
+def heat_compare(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK,
+                 style: str = "smooth", kind: str = "activity") -> plt.Figure:
+    """The same heat map for both teams side by side (each attacking left → right)."""
+    from fap.matchlab import heat as HT
+    th = theme
+    opp = md.opponent(team)
+    label, desc = HT.KINDS[kind]
+    with plt.rc_context(_rc(th)):
+        fig = _figure(th, (20, 8.2), f"{label} — {team} vs {opp}", _subtitle(md, team, half, None, desc),
+                      "Each team attacking left → right")
+        for j, (tm, col) in enumerate(((team, th.team), (opp, th.opp))):
+            ax = fig.add_axes([0.02 + j * 0.49, 0.2, 0.47, 0.62])
+            pitch = _pitch(th, line_zorder=3)
+            pitch.draw(ax=ax)
+            ev = HT.points(md, tm, kind, half, None)
+            _heat_draw(ax, pitch, th, ev, style)
+            _attack_arrow(ax, th)
+            ax.set_title(f"{tm}  ·  {len(ev)}", loc="left", fontsize=14, color=col, fontweight="bold", pad=6)
+            if len(ev):
+                thirds = pd.Series(M.third_of(ev["x"])).value_counts(normalize=True).reindex(M.THIRD_NAMES).fillna(0)
+                txt = "     ".join(f"{k}: {v * 100:.0f}%" for k, v in thirds.items())
+                fig.text(0.02 + j * 0.49, 0.08, txt, fontsize=10.5, color=th.text, ha="left")
+    return fig
+
+
+def switches_map(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK) -> plt.Figure:
+    """Switches of play: >= 30 m across, from one side of the pitch to the other."""
+    th = theme
+    with plt.rc_context(_rc(th)):
+        p = _scope(md, team, half, player)
+        sw = p[(p["etype"] == "pass") & p["switch"] & p["end_x"].notna()]
+        ok, ko = sw[sw["outcome"] == 1], sw[sw["outcome"] != 1]
+        fig = _figure(th, (14, 8), f"{team} — Switches of play", _subtitle(md, team, half, player,
+                      f"{len(ok)}/{len(sw)} completed"),
+                      f"Switch = pass ≥ {M.SWITCH_MIN_M:.0f} m across, from one side to the other (not from the central lane)")
+        ax = fig.add_axes([0.02, 0.1, 0.72, 0.76])
+        pitch = _pitch(th)
+        pitch.draw(ax=ax)
+        for yv in (M.CHANNEL_EDGES[2], M.CHANNEL_EDGES[3]):
+            ax.plot([0, PITCH_L], [yv, yv], color=th.line, lw=0.8, ls=(0, (2, 3)), zorder=1.2, alpha=0.7)
+        ax.text(1.5, (M.CHANNEL_EDGES[2] + M.CHANNEL_EDGES[3]) / 2, "central lane", color=th.muted, fontsize=7.5,
+                va="center", alpha=0.8)
+        if len(ko):
+            pitch.arrows(ko["x"], ko["y"], ko["end_x"], ko["end_y"], ax=ax, color=th.bad, width=1.6, headwidth=5,
+                         headlength=5, alpha=0.7, zorder=3, ls=(0, (3, 2)))
+        if len(ok):
+            pitch.arrows(ok["x"], ok["y"], ok["end_x"], ok["end_y"], ax=ax, color=th.team, width=2.4, headwidth=5,
+                         headlength=5, zorder=4)
+            pitch.scatter(ok["x"], ok["y"], s=40, color=th.team, edgecolors=th.bg, linewidths=0.8, ax=ax, zorder=5)
+        if len(ko):
+            pitch.scatter(ko["x"], ko["y"], s=30, color=th.bad, edgecolors=th.bg, linewidths=0.6, ax=ax, zorder=5)
+        if sw.empty:
+            _empty(ax, th, "No switches of play")
+        _attack_arrow(ax, th)
+        _legend(ax, th, [("Completed", th.team, "line"), ("Unsuccessful", th.bad, "dash")], y=-0.06)
+        r2l = sw["end_y"] > sw["y"]                    # y = 0 is the right touchline
+        items = [("Switches", _fmt(len(sw))), ("Completed", _fmt(M._pct(len(ok), len(sw)), 0, True)),
+                 ("Right → left", f"{int(ok.index.isin(sw[r2l].index).sum())}/{int(r2l.sum())}"),
+                 ("Left → right", f"{int(ok.index.isin(sw[~r2l].index).sum())}/{int((~r2l).sum())}"),
+                 ("From own half", _fmt(int((sw["x"] < PITCH_L / 2).sum()))),
+                 ("Avg distance across", _fmt((sw["end_y"] - sw["y"]).abs().mean(), 0) + " m" if len(sw) else "–")]
+        _kpis(fig, th, [0.765, 0.36, 0.21, 0.5], items, title="Summary")
+        axb = fig.add_axes([0.80, 0.1, 0.17, 0.2])
+        if not player and len(sw):
+            top = sw.groupby("player")["outcome"].agg(att="size", comp=lambda s: int((s == 1).sum()))
+            top = top[~top.index.isin(["", "0"])].sort_values("att", ascending=False).head(5)
+            if len(top):
+                _hbar(axb, th, [f"#{i}" for i in top.index], top["att"], top["comp"], th.team, "Top switchers", pct=False)
+            else:
+                axb.set_axis_off()
+        else:
+            axb.set_axis_off()
     return fig
 
 
@@ -1591,6 +1697,8 @@ def _set_panel(fig, name: str, *axes) -> None:
 _PANEL_INDEX = {
     "pass_map": {"Pitch": [0], "Summary": [1], "Top players": [2]},
     "progression": {"Pitch": [0], "Summary": [1], "Top progressors": [2]},
+    "switches": {"Pitch": [0], "Summary": [1], "Top switchers": [2]},
+    "heat_compare": {"Our team": [0], "Opponent": [1]},
     "pass_profile": {"Direction rose": [0], "Pass type": [1], "Direction": [2], "Length": [3], "Height": [4], "Line broken": [5]},
     "pass_sonars": {"Pitch": [0, 1]},
     "pass_network": {"Pitch": [0], "Top combinations": [1]},
@@ -1661,6 +1769,7 @@ CHARTS: list[ChartSpec] = [
     ChartSpec("pass_network", "Passing network", "Passing", pass_network),
     ChartSpec("passing_matrix", "Passing matrix", "Passing", passing_matrix),
     ChartSpec("progression", "Ball progression", "Progression", progression_map),
+    ChartSpec("switches", "Switches of play", "Progression", switches_map),
     ChartSpec("entries", "Final-third & box entries", "Progression", entries_map),
     ChartSpec("crosses", "Crosses", "Progression", crosses_map),
     ChartSpec("shots", "Shot map", "Progression", shot_map),
@@ -1673,7 +1782,9 @@ CHARTS: list[ChartSpec] = [
     ChartSpec("counterpress", "Counter-press", "Defending", counterpress_map),
     ChartSpec("defensive", "Defensive actions", "Defending", defensive_map),
     ChartSpec("losses", "Ball losses & regains", "Defending", losses_recoveries),
-    ChartSpec("heatmap", "Activity heat map", "Territory", touch_heatmap),
+    ChartSpec("heatmap", "Heat map", "Heat maps", touch_heatmap),
+    ChartSpec("heat_sheet", "Heat-map sheet", "Heat maps", heat_sheet),
+    ChartSpec("heat_compare", "Heat map · both teams", "Heat maps", heat_compare),
     ChartSpec("player", "Player dashboard", "Players", player_dashboard, needs_player=True),
 ]
 CHART_BY_KEY = {c.key: c for c in CHARTS}

@@ -769,14 +769,14 @@ def flow(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DAR
 
 # ------------------------------------------------------------------ heat map
 def heat(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, style: str = "smooth",
-         names: dict | None = None) -> go.Figure:
+         kind: str = "activity", names: dict | None = None) -> go.Figure:
+    from fap.matchlab import heat as HT
     from fap.matchlab.metrics import CHANNEL_EDGES, CHANNELS, THIRD_NAMES
-    th = theme
-    ev = _scope(md, team, half, player)
-    ev = ev[ev["etype"].isin(["pass", "receive", "carry", "dribble", "shot", "recovery", "interception", "tackle", "duel"])
-            & ev["x"].notna() & ~ev["derived"].astype(bool)]
-    fig = _pitch(th, f"{team} — {'Touch' if player else 'Activity'} heat map",
-                 _subtitle(md, team, half, player, f"{len(ev)} on-ball & defensive actions"))
+    th, names = theme, names or {}
+    label, desc = HT.KINDS[kind]
+    ev = HT.points(md, team, kind, half, player)
+    fig = _pitch(th, f"{team} — {'Touch' if player and kind == 'activity' else label} heat map",
+                 _subtitle(md, team, half, player, f"{len(ev)} events · {desc}"))
     if ev.empty:
         _empty(fig, th)
         return fig
@@ -788,9 +788,12 @@ def heat(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DAR
                 m = (ev["x"] >= a) & (ev["x"] < b) & (ev["y"] >= y0) & (ev["y"] < y1)
                 share = m.mean()
                 top = ev[m]["etype"].value_counts().head(3)
+                who = ev[m]["player"][~ev[m]["player"].isin(["", "0"])].value_counts().head(3)
                 _rect(fig, a, b, y0, y1, _heat_color(th, share * 6), (
-                    f"<b>{tn} · {CHANNELS[k]}</b><br>{int(m.sum())} actions · {share * 100:.1f}% of all<br>"
-                    + ", ".join(f"{k2} {v}" for k2, v in top.items())), 0.9, line=dict(color=th.bg, width=1.5))
+                    f"<b>{tn} · {CHANNELS[k]}</b><br>{int(m.sum())} events · {share * 100:.1f}% of all<br>"
+                    + ", ".join(f"{k2} {v}" for k2, v in top.items())
+                    + ("<br>most: " + ", ".join(f"{_who(p_, names)} ({v})" for p_, v in who.items()) if len(who) else "")),
+                    0.9, line=dict(color=th.bg, width=1.5))
                 if m.sum():
                     fig.add_annotation(x=(a + b) / 2, y=(y0 + y1) / 2, text=f"{share * 100:.0f}%", showarrow=False,
                                        font=dict(size=12, color=th.text))
@@ -801,10 +804,42 @@ def heat(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DAR
     raw = H.T
     smooth = gaussian_filter(raw.astype(float), 1.6)
     xc, yc = (xe[:-1] + xe[1:]) / 2, (ye[:-1] + ye[1:]) / 2
-    text = [[f"x {xe[i]:.0f}–{xe[i + 1]:.0f} m · y {ye[j]:.0f}–{ye[j + 1]:.0f} m<br>{int(raw[j, i])} actions in this cell"
+    text = [[f"x {xe[i]:.0f}–{xe[i + 1]:.0f} m · y {ye[j]:.0f}–{ye[j + 1]:.0f} m<br>{int(raw[j, i])} events in this cell"
              f"<br>density {smooth[j, i] / smooth.max() * 100:.0f}% of the peak" for i in range(nx)] for j in range(ny)]
     fig.add_trace(go.Heatmap(x=xc, y=yc, z=smooth, colorscale=[[i / (len(th.heat) - 1), c] for i, c in enumerate(th.heat)],
                              showscale=False, zsmooth="best", text=text, hoverinfo="text", opacity=0.95))
+    return fig
+
+
+def heat_compare(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, style: str = "smooth",
+                 kind: str = "activity", names: dict | None = None) -> list:
+    """The same heat map for both teams, side by side (each attacking left → right)."""
+    out = []
+    for tm in (team, md.opponent(team)):
+        f = heat(md, tm, half=half, player=None, theme=theme, style=style, kind=kind, names=names)
+        out.append(f)
+    return out
+
+
+def switches(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK,
+             names: dict | None = None) -> go.Figure:
+    """Switches of play: >= 30 m across, from one side of the pitch to the other."""
+    from fap.matchlab.metrics import CHANNEL_EDGES, SWITCH_MIN_M
+    th, names = theme, names or {}
+    ev = _scope(md, team, half, player)
+    sw = ev[(ev["etype"] == "pass") & ev["switch"] & ev["end_x"].notna()]
+    ok, ko = sw[sw["outcome"] == 1], sw[sw["outcome"] != 1]
+    r2l = int((sw["end_y"] > sw["y"]).sum())
+    fig = _pitch(th, f"{team} — Switches of play", _subtitle(md, team, half, player,
+                 f"{len(ok)}/{len(sw)} completed · {r2l} right → left, {len(sw) - r2l} left → right · "
+                 f"≥ {SWITCH_MIN_M:.0f} m across, side to side"))
+    for yv in (CHANNEL_EDGES[2], CHANNEL_EDGES[3]):
+        fig.add_shape(type="line", x0=0, x1=PITCH_L, y0=yv, y1=yv, line=dict(color=th.line, width=0.8, dash="dot"),
+                      layer="below")
+    _add_moves(fig, ko, th.bad, "Unsuccessful switch", names, th, symbol="x", dash="dash", width=1.6)
+    _add_moves(fig, ok, th.team, "Completed switch", names, th, width=2.6)
+    if sw.empty:
+        _empty(fig, th, "No switches of play")
     return fig
 
 
@@ -1195,7 +1230,8 @@ def compare_radar(md: MatchData, team: str, players: list, *, half=None, theme: 
 INTERACTIVE = {"counterpress": counterpress, "pass_map": pass_map, "pass_map_halves": pass_map_halves,
                "progression": progression, "entries": entries, "crosses": crosses, "shots": shots,
                "defensive": defensive, "losses": losses, "sequence": sequence, "pass_network": network,
-               "pass_sonars": sonars, "pass_flow": flow, "heatmap": heat, "phases_in": phases_in,
+               "pass_sonars": sonars, "pass_flow": flow, "heatmap": heat, "heat_compare": heat_compare,
+               "switches": switches, "phases_in": phases_in,
                "phases_out": phases_out, "buildup": buildup}
 
 
