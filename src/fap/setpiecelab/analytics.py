@@ -9,6 +9,7 @@ from fap.setpiecelab.loader import SetPieceData, is_yes
 
 DANGER = {"goal", "shot", "threat"}
 CONTESTS = ("1st contact", "2nd ball")
+# "Yes" in a contest column = the file's team won it — whether it takes or defends the set piece.
 
 
 def _rate(series: pd.Series) -> tuple[int, int]:
@@ -22,6 +23,11 @@ def _col(sd: SetPieceData, name: str) -> str | None:
         if q.strip().lower() == name.lower():
             return q
     return None
+
+
+def contest_label(sd: SetPieceData, v: str) -> str:
+    yn = is_yes(v)
+    return f"{sd.team} won" if yn is True else "Opponent won" if yn is False else v
 
 
 def overview(sd: SetPieceData) -> pd.DataFrame:
@@ -56,9 +62,13 @@ def overview(sd: SetPieceData) -> pd.DataFrame:
 def breakdown(sd: SetPieceData, row: str) -> dict[str, pd.Series]:
     g = sd.of(row=row)
     out = {}
+    contests = {c.lower() for c in CONTESTS}
     for q in sd.qualifiers:
         vc = g[q][g[q] != ""].value_counts()
         if len(vc):
+            if q.strip().lower() in contests:            # Yes / No → who won it
+                vc = vc.rename(lambda v: contest_label(sd, v))
+                vc = vc.groupby(level=0).sum().sort_values(ascending=False)
             out[q] = vc
     return out
 
@@ -96,7 +106,7 @@ def insights(sd: SetPieceData) -> list[tuple[str, str]]:
             if col:
                 y, n = _rate(g[col])
                 if n:
-                    parts.append(f"{c} = Yes {y}/{n} ({y / n * 100:.0f}%)")
+                    parts.append(f"{c} won by {team} {y}/{n} ({y / n * 100:.0f}%)")
         if out_c:
             o = g[out_c][g[out_c] != ""].str.lower()
             if len(o):

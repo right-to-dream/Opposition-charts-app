@@ -39,7 +39,7 @@ def overview_bars(sd: SetPieceData, *, theme: Theme = DARK) -> go.Figure:
         bits = [f"<b>{r['Set piece']}</b> ({r['Phase'].lower()} for {sd.team})", f"{int(r['Count'])} coded"]
         for c in A.CONTESTS:
             if f"{c} decided" in r and r[f"{c} decided"]:
-                bits.append(f"{c} = Yes {int(r[f'{c} won'])}/{int(r[f'{c} decided'])}")
+                bits.append(f"{c} won by {sd.team} {int(r[f'{c} won'])}/{int(r[f'{c} decided'])}")
         if "Goals" in r:
             bits.append(f"goals {int(r['Goals'])} · shots {int(r['Shots'])} · dangerous {int(r['Dangerous (goal/shot/threat)'])}")
         for k in ("Main execution", "Main target", "Main side"):
@@ -63,13 +63,13 @@ def contest_rates(sd: SetPieceData, *, theme: Theme = DARK) -> go.Figure:
             continue
         d = ov[ov[f"{c} decided"] > 0]
         rate = d[f"{c} won"] / d[f"{c} decided"] * 100
-        fig.add_trace(go.Bar(x=d["Set piece"], y=rate, name=f"{c} = Yes", marker_color=col,
+        fig.add_trace(go.Bar(x=d["Set piece"], y=rate, name=f"{c} won by {sd.team}", marker_color=col,
                              text=[f"{int(a)}/{int(b)}" for a, b in zip(d[f"{c} won"], d[f"{c} decided"])],
                              textposition="outside", cliponaxis=False,
-                             hovertext=[f"<b>{s}</b><br>{c} coded Yes: {int(a)} of {int(b)} ({p:.0f}%)"
+                             hovertext=[f"<b>{s}</b><br>{c} won by {sd.team}: {int(a)} of {int(b)} ({p:.0f}%)"
                                         for s, a, b, p in zip(d["Set piece"], d[f"{c} won"], d[f"{c} decided"], rate)],
                              hoverinfo="text"))
-    _base(fig, th, f"{sd.team} — 1st contact & 2nd ball", "share of coded instances marked Yes", 380)
+    _base(fig, th, f"{sd.team} — 1st contact & 2nd ball", f"share of the contests {sd.team} won — attacking and defending", 380)
     fig.update_layout(barmode="group", yaxis=dict(range=[0, 115], ticksuffix="%"), bargap=0.3)
     return fig
 
@@ -135,6 +135,8 @@ def qualifier_grid(sd: SetPieceData, row: str, *, theme: Theme = DARK) -> go.Fig
         for k in vc.index:
             yn = is_yes(k)
             kl = k.lower()
+            if kl.endswith(" won"):
+                yn = not kl.startswith("opponent")
             colors.append(th.good if yn is True or kl in ("goal",) else th.bad if yn is False else
                           th.accent if kl in ("shot", "threat") else th.team)
         fig.add_trace(go.Bar(y=list(vc.index), x=vc.values, orientation="h", marker_color=colors, showlegend=False,

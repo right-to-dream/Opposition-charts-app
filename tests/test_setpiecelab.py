@@ -73,20 +73,56 @@ def test_charts_build(sd):
 
 
 def test_templates_and_library(sd):
-    assert len(D.TEMPLATES) >= 10
+    assert len(D.TEMPLATES) >= 12
     for name in D.TEMPLATES:
-        b = D.template(name)
-        assert len(b.frames) >= 2
-        ids = {o.id for o in b.frames[0].objects}
-        assert ids & {o.id for o in b.frames[-1].objects}       # same objects across steps = animation
-    pb = D.pattern_board(sd, "Offensive Corner")
-    assert pb.frames and pb.frames[0].objects
-    doc = D.routine_doc(pb, {"title": "Near post", "category": "Corner", "phase": "Attacking"})
-    back = D.board_of(doc)
-    assert back.name == pb.name and len(back.frames) == len(pb.frames)
-    assert "Corner" in D.summary_text(doc)
-    ddoc = D.drill_doc(pb, {"title": "2nd balls", "focus": "Second balls"})
-    assert ddoc["kind"] == "drill"
+        d = D.template(name)
+        assert D.clean_doc(d) is not None and len(d["steps"]) >= 2, name
+        moved = any(d["steps"][0]["pos"].get(k) != d["steps"][-1]["pos"].get(k) for k in d["steps"][0]["pos"])
+        assert moved, name                                   # something actually moves = animation
+    pd_ = D.pattern_doc(sd, "Offensive Corner")
+    marks = [o for o in pd_["objects"] if o["kind"] == "mark"]
+    assert len(marks) == 3 and pd_["steps"][0]["zones"]
+    lib = D.routine_doc(pd_, {"title": "Near post", "category": "Corner", "phase": "Attacking"})
+    back = D.board_of(lib)
+    assert back["name"] == pd_["name"] and len(back["steps"]) == len(pd_["steps"])
+    assert "Corner" in D.summary_text(lib)
+    assert D.drill_doc(pd_, {"title": "2nd balls", "focus": "Second balls"})["kind"] == "drill"
+
+
+def test_advance_and_animation_follow_the_line():
+    d = D.new_doc()
+    d["objects"].append({"id": "p", "kind": "player", "team": "home", "gk": False, "num": "9", "label": "", "color": ""})
+    s0 = d["steps"][0]
+    s0["pos"]["p"] = [90.0, 30.0]
+    s0["lines"].append({"id": "l", "kind": "run", "a": [90.0, 30.0], "b": [100.0, 30.0], "c": [95.0, 40.0], "obj": "p"})
+    d["steps"].append(D.advance(s0, "Run"))
+    assert d["steps"][1]["pos"]["p"] == [100.0, 30.0] and d["steps"][1]["lines"] == []
+    x, y, a = D.frame_positions(d, 0, 0.5)["p"]
+    assert a == 1.0 and y > 34                               # follows the curve, not the straight line
+
+
+def test_clean_doc_rejects_garbage():
+    assert D.clean_doc(None) is None and D.clean_doc({"steps": []}) is None
+    doc = D.clean_doc({"steps": [{"pos": {"ghost": [1, 2]}, "lines": [{"kind": "rm -rf", "a": [0, 0], "b": [1, 1]}]}],
+                       "objects": [{"id": "x", "kind": "<script>"}], "view": "evil", "colors": {"home": "red;"}})
+    assert doc["objects"] == [] and doc["steps"][0]["pos"] == {} and doc["steps"][0]["lines"] == []
+    assert doc["view"] == "half" and doc["colors"]["home"].startswith("#")
+
+
+def test_exports_render(sd):
+    from fap.setpiecelab import render as R
+    from fap.setpiecelab import static as S
+    d = D.template("Penalty · taker and rebounds")
+    for style in ("grass", "dark", "light"):
+        d["style"] = style
+        assert R.step_png(d, 0, dpi=40)[1:4] == b"PNG"
+    assert R.sheet_png(d, {"coaching_points": "Strike low."}, dpi=40)[1:4] == b"PNG"
+    assert R.gif_bytes(d, fps=4, width_px=300)[:3] == b"GIF"
+    for fig in (S.overview(sd), S.contests(sd), S.landing(sd, "Offensive Corner", color_by="Outcome"),
+                S.landing(sd, "Defensive Corner"), S.qualifiers(sd, "Offensive Corner"),
+                S.cross(sd, "Offensive Corner", "Execution", "Outcome"), S.outcome_by(sd, "Offensive Corner", "Execution"),
+                S.report_card(sd, "Offensive Corner")):
+        assert S.png(fig, 30)[1:4] == b"PNG"
 
 
 def test_bad_file():
