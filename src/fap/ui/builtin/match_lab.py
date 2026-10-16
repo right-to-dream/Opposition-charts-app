@@ -31,6 +31,50 @@ ML_REF_KIND = "matchlab_reference"
 HALVES = {"Full match": None, "1st half": 1, "2nd half": 2}
 
 
+
+# ---------------------------------------------------------------- multi-match
+# (chart key, options, label, works for one player)
+MM_CHARTS = {
+    "pass_map": ("pass_map", {"kind": "all"}, "Pass map", True),
+    "progression": ("progression", {}, "Ball progression", True),
+    "switches": ("switches", {}, "Switches of play", True),
+    "entries": ("entries", {"open_play_only": True}, "Final-third & box entries", True),
+    "crosses": ("crosses", {}, "Crosses", True),
+    "shots": ("shots", {}, "Shot map", True),
+    "pass_sonars": ("pass_sonars", {}, "Pass sonars", True),
+    "pass_flow": ("pass_flow", {}, "Pass flow", True),
+    "heat_activity": ("heatmap", {"kind": "activity", "style": "smooth"}, "Heat map · activity", True),
+    "heat_receptions": ("heatmap", {"kind": "receptions", "style": "smooth"}, "Heat map · receptions", True),
+    "heat_passes": ("heatmap", {"kind": "passes", "style": "smooth"}, "Heat map · passes made", True),
+    "heat_regains": ("heatmap", {"kind": "regains", "style": "smooth"}, "Heat map · ball regains", True),
+    "heat_losses": ("heatmap", {"kind": "losses", "style": "smooth"}, "Heat map · ball losses", True),
+    "heat_sheet": ("heat_sheet", {"style": "smooth"}, "Heat-map sheet (all 8)", True),
+    "defensive": ("defensive", {}, "Defensive actions", True),
+    "losses": ("losses", {}, "Ball losses & regains", True),
+    "buildup": ("buildup", {"min_passes": 3}, "Build-up sequences (team)", False),
+    "phases_in": ("phases_in", {}, "Phases · in possession (team)", False),
+    "phases_out": ("phases_out", {}, "Phases · out of possession (team)", False),
+    "pass_network": ("pass_network", {"min_passes": 3}, "Passing network (team)", False),
+    "counterpress": ("counterpress", {}, "Counter-press (team)", False),
+    "player": ("player", {}, "Player dashboard (player only)", True),
+}
+
+
+def _fname(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(s)).strip("_") or "chart"
+
+
+@st.cache_resource(show_spinner=False, max_entries=6)
+def _mm_combined(sig: str, _items):
+    from fap.matchlab import multimatch as MM
+    return MM.combine(_items)
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def _mm_table(sig: str, player, half, _items, _cm):
+    from fap.matchlab import multimatch as MM
+    return MM.comparison_table(_items, _cm, player=player, half=half)
+
 # ---------------------------------------------------------------- cached engine calls
 @st.cache_resource(show_spinner=False, max_entries=8)
 def _load(sig: str, _data: bytes, name: str, mirror_y: bool, t1: float, t2: float, cp: float = 8.0):
@@ -165,6 +209,11 @@ class MatchLabPage(Page):
         st.caption("Professional match analysis from a tagged event file (105 × 68 m). Every metric — "
                    "progressive passes, pass types & directions, entries, phases of play, defending — is "
                    "derived from the file's x / y and labels.")
+        mode = st.radio("View", ["Single match", "Multi-match comparison"], horizontal=True, key="ml_mode",
+                        label_visibility="collapsed")
+        if mode != "Single match":
+            self._multi(shell)
+            return
         self._source(shell, can_edit)
         f = st.session_state.get(ML_FILE)
         if not f:
@@ -282,6 +331,216 @@ class MatchLabPage(Page):
         with tabs[8]:
             self._data_export(shell, can_edit, md, aud)
             self._method(md, team)
+
+    # ---- multi-match comparison ---------------------------------------------
+    def _multi(self, shell) -> None:
+        import json
+        import zipfile
+        from fap.matchlab import ENGINE_VERSION
+        from fap.matchlab import multimatch as MM
+        from fap.matchlab.charts import THEMES
+        st.caption("Compare the same charts and numbers across several matches — for the team or one player. "
+                   "Match by match side by side, all matches combined, and the trend. Downloads: PNG and a PDF report.")
+        c = st.columns([3, 3])
+        ups = c[0].file_uploader("Match files (2 or more)", type=["xlsx", "xls", "csv"], accept_multiple_files=True,
+                                 key="ml_mm_upload")
+        saved = {getattr(p, "name", "match"): p for p in _list(shell)}
+        picks = c[1].multiselect("Saved matches", list(saved), key="ml_mm_saved") if saved else []
+        srcs = [(u.name, u.getvalue()) for u in (ups or [])]
+        for n in picks:
+            doc = getattr(saved[n], "document", None) or {}
+            try:
+                srcs.append((doc.get("name") or n, base64.b64decode(doc.get("data_b64", ""))))
+            except Exception:
+                pass
+        if len(srcs) < 2:
+            C.render_empty_state("Add two or more matches", "Upload several tagging files (or pick saved matches) "
+                                 "to compare them.", icon_name="upload")
+            return
+        t1, t2 = float(st.session_state.get("ml_t1", 35.0)), float(st.session_state.get("ml_t2", 70.0))
+        mirror, cpw = bool(st.session_state.get("ml_mirror", False)), float(st.session_state.get("ml_cpw", 8))
+        items = []
+        with st.spinner(f"Analysing {len(srcs)} matches…"):
+            for i, (name, data) in enumerate(srcs):
+                sig = f"{ENGINE_VERSION}|" + hashlib.sha1(data).hexdigest()[:16] + f"|{mirror}|{t1}|{t2}|{cpw}"
+                try:
+                    md = _load(sig, data, name, mirror, t1, t2, cpw)
+                except Exception as exc:
+                    C.render_alert(f"{name}: could not read ({exc})", "danger")
+                    continue
+                items.append(MM.MatchItem(MM.default_label(md, i, name), md, sig))
+        if len(items) < 2:
+            return
+        with st.expander("Match order & labels", expanded=False):
+            ed = st.data_editor(pd.DataFrame({"Order": range(1, len(items) + 1), "Label": [it.label for it in items],
+                                              "File": [n for n, _ in srcs][:len(items)]}),
+                                hide_index=True, use_container_width=True, disabled=["File"], key="ml_mm_order")
+            try:
+                order = list(pd.to_numeric(ed["Order"], errors="coerce").fillna(99).argsort())
+                for it, lab in zip(items, ed["Label"]):
+                    it.label = str(lab).strip() or it.label
+                items = [items[k] for k in order]
+            except Exception:
+                pass
+        allsig = "MM|" + "|".join(f"{it.sig}:{it.label}" for it in items)
+        cm = _mm_combined(allsig, items)
+        our = cm.teams[0]
+        ref = _reference(_ref_state(shell))
+        opts_p = MM.player_options(items, ref.squad)
+        c = st.columns([1.3, 2.6, 1.4, 1.2])
+        scope = c[0].radio("Compare", ["Team", "Player"], horizontal=True, key="ml_mm_scope")
+        player, plabel = None, our
+        if scope == "Player":
+            if not opts_p:
+                c[1].caption("No player numbers in these files.")
+                return
+            lab = c[1].selectbox("Player", [o["label"] for o in opts_p], key="ml_mm_player")
+            o = next(o for o in opts_p if o["label"] == lab)
+            player, plabel = o["key"], (o["name"] or f"#{o['key']}") + f" (#{o['key']})"
+            c[1].caption(f"Played in {len(o['matches'])} of {len(items)} matches.")
+        half = HALVES[c[2].selectbox("Period", list(HALVES), key="ml_mm_half")]
+        theme = c[3].radio("Theme", ["Dark", "Light"], horizontal=True, key="ml_mm_theme")
+        th = THEMES[theme]
+        dpi = int(st.session_state.get("ml_dpi", 300))
+        period = {None: "full match", 1: "1st half", 2: "2nd half"}[half]
+        sub = f"{our} · {len(items)} matches · {period}"
+        who = f"{our}" if player is None else plabel
+        table = _mm_table(allsig + f"|{theme}", player, half, items, cm)
+
+        tabs = st.tabs(["Comparison", "Charts", "PDF report"])
+        with tabs[0]:
+            show = table.copy()
+            st.dataframe(show.style.format(lambda v: "–" if pd.isna(v) else (f"{v:.0f}" if abs(v) >= 100 else f"{v:.1f}")),
+                         use_container_width=True)
+            st.caption("“All matches” is computed on all events together (totals for counts, overall rates for %). "
+                       "“–” = not measurable (e.g. the opponent is not tagged in that file).")
+            default = ["Pass accuracy %", "Progressive passes", "xG", "Second balls won %", "Counter-pressed %",
+                       "Build-ups reaching final third %"] if player is None else \
+                      ["Passes", "Pass accuracy %", "Progressive passes", "Defensive actions", "Second balls won", "Ball losses"]
+            mets = st.multiselect("Trend — metrics", list(table.index), default=[m for m in default if m in table.index],
+                                  key=f"ml_mm_trend_{scope}")
+            tfig = MM.trend_figure(table, mets, f"{who} — trend across matches", sub, theme=th)
+            tpng = MM.fig_png(tfig, 110)
+            st.image(tpng, use_container_width=True)
+            cc = st.columns(3)
+            cc[0].download_button("Trend (PNG)", MM.fig_png(MM.trend_figure(table, mets, f"{who} — trend across matches",
+                                                                           sub, theme=th), dpi),
+                                  file_name=f"{_fname(who)}_trend.png", mime="image/png", key="ml_mm_trend_dl",
+                                  use_container_width=True)
+            cc[1].download_button("Table (PNG)", MM.fig_png(MM.table_figure(table, f"{who} — match by match", sub, theme=th), dpi),
+                                  file_name=f"{_fname(who)}_table.png", mime="image/png", key="ml_mm_table_dl",
+                                  use_container_width=True)
+            cc[2].download_button("Table (CSV)", table.round(2).to_csv().encode("utf-8-sig"),
+                                  file_name=f"{_fname(who)}_table.csv", mime="text/csv", key="ml_mm_table_csv",
+                                  use_container_width=True)
+
+        def chart_pngs(cid: str, dpi_: int):
+            key, opts, label, p_ok = MM_CHARTS[cid]
+            pl = player if p_ok else None
+            out = []
+            for it in items:
+                if pl and not (it.md.events["player"] == pl).any():
+                    continue
+                png, _ = _png(it.sig, key, it.md.our_team, half, pl, theme, tuple(sorted(opts.items())), dpi_, it.md)
+                out.append((it.label, png))
+            comb, _ = _png(allsig, key, our, half, pl, theme, tuple(sorted(opts.items())), dpi_, cm)
+            return out, comb
+
+        valid = {k: v for k, v in MM_CHARTS.items() if not (k == "player" and player is None)}
+        with tabs[1]:
+            pick_default = ["pass_map", "heat_activity"] if player else ["buildup", "pass_map"]
+            chosen = st.multiselect("Charts to compare", list(valid), default=pick_default, max_selections=6,
+                                    format_func=lambda k: valid[k][2], key=f"ml_mm_charts_{scope}")
+            if player:
+                st.caption("Charts marked (team) show the whole team.")
+            for cid in chosen:
+                key, opts, label, p_ok = MM_CHARTS[cid]
+                st.markdown(f"#### {label}")
+                per, comb = chart_pngs(cid, 110)
+                t_a, t_b = st.tabs(["Match by match", "All matches combined"])
+                with t_a:
+                    ncol = 2 if len(per) in (2, 4) else 3
+                    for row in range(0, len(per), ncol):
+                        cols = st.columns(ncol)
+                        for (lab, png), col in zip(per[row:row + ncol], cols):
+                            col.markdown(f"**{lab}**")
+                            col.image(png, use_container_width=True)
+                    missing = [it.label for it in items if it.label not in {l_ for l_, _ in per}]
+                    if missing:
+                        st.caption("Did not play: " + ", ".join(missing))
+                with t_b:
+                    from fap.matchlab import interactive as IX
+                    shown = False
+                    if key in IX.INTERACTIVE:
+                        try:
+                            fig = IX.build(key, cm, our, half=half, player=player if p_ok else None, theme=th,
+                                           names=ref.squad.short, **opts)
+                            if fig is not None and not isinstance(fig, list):
+                                st.plotly_chart(fig, use_container_width=True, key=f"ml_mm_ix_{cid}", theme=None,
+                                                config={"displaylogo": False, "modeBarButtonsToRemove": ["toImage", "lasso2d", "select2d"]})
+                                shown = True
+                        except Exception:
+                            shown = False
+                    if not shown:
+                        st.image(comb, use_container_width=True)
+                stamp = f"{allsig}|{cid}|{player}|{half}|{theme}|{dpi}"
+                cc = st.columns(3)
+                if cc[0].button("Prepare PNGs", key=f"ml_mm_prep_{cid}", use_container_width=True):
+                    with st.spinner("Rendering…"):
+                        per_hi, comb_hi = chart_pngs(cid, dpi)
+                        grid = MM.grid_png(per_hi, f"{label} — {who}", sub, theme=th)
+                        z = io.BytesIO()
+                        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for k_, (lab, png) in enumerate(per_hi, start=1):
+                                zf.writestr(f"{k_:02d}_{_fname(lab)}.png", png)
+                    st.session_state[f"_ml_mm_png_{cid}"] = (stamp, grid, comb_hi, z.getvalue())
+                got = st.session_state.get(f"_ml_mm_png_{cid}")
+                if got and got[0] == stamp:
+                    base = _fname(f"{who}_{label}")
+                    cc[0].download_button("Side-by-side (PNG)", got[1], file_name=f"{base}_by_match.png", mime="image/png",
+                                          key=f"ml_mm_dlg_{cid}", type="primary", use_container_width=True)
+                    cc[1].download_button("All matches combined (PNG)", got[2], file_name=f"{base}_combined.png",
+                                          mime="image/png", key=f"ml_mm_dlc_{cid}", use_container_width=True)
+                    cc[2].download_button("Each match (ZIP of PNGs)", got[3], file_name=f"{base}_matches.zip",
+                                          mime="application/zip", key=f"ml_mm_dlz_{cid}", use_container_width=True)
+                st.divider()
+
+        with tabs[2]:
+            st.caption("A PDF with a cover, the comparison table, the trend and every chart you pick "
+                       "(match by match and / or all matches combined).")
+            charts_pdf = st.multiselect("Charts in the report", list(valid),
+                                        default=st.session_state.get(f"ml_mm_charts_{scope}", []) or ["pass_map"],
+                                        format_func=lambda k: valid[k][2], key=f"ml_mm_pdf_charts_{scope}")
+            cc = st.columns(4)
+            inc_tab = cc[0].checkbox("Comparison table", True, key="ml_mm_pdf_tab")
+            inc_trend = cc[1].checkbox("Trend", True, key="ml_mm_pdf_trend")
+            inc_per = cc[2].checkbox("Match by match", True, key="ml_mm_pdf_per")
+            inc_comb = cc[3].checkbox("All matches combined", True, key="ml_mm_pdf_comb")
+            stamp = json.dumps([allsig, player, half, theme, charts_pdf, inc_tab, inc_trend, inc_per, inc_comb,
+                                st.session_state.get(f"ml_mm_trend_{scope}")], default=str)
+            if st.button("Prepare PDF report", type="primary", key="ml_mm_pdf"):
+                pages = []
+                with st.spinner("Building the report…"):
+                    if inc_tab:
+                        pages.append(("Match by match", MM.fig_png(MM.table_figure(table, f"{who} — match by match", sub,
+                                                                                   theme=th), 200)))
+                    if inc_trend:
+                        mets = st.session_state.get(f"ml_mm_trend_{scope}") or list(table.index[:6])
+                        pages.append(("Trend", MM.fig_png(MM.trend_figure(table, mets, f"{who} — trend across matches",
+                                                                          sub, theme=th), 200)))
+                    for cid in charts_pdf:
+                        label = MM_CHARTS[cid][2]
+                        per, comb = chart_pngs(cid, 200)
+                        if inc_per and per:
+                            pages.append((f"{label} — match by match", MM.grid_png(per, f"{label} — {who}", sub, theme=th)))
+                        if inc_comb:
+                            pages.append((f"{label} — all matches combined", comb))
+                    pdf = MM.pdf_report(f"{who} — multi-match report", sub, [it.label for it in items], pages, theme=th)
+                st.session_state["_ml_mm_pdf"] = (stamp, pdf)
+            got = st.session_state.get("_ml_mm_pdf")
+            if got and got[0] == stamp:
+                st.download_button("Download PDF report", got[1], file_name=f"{_fname(who)}_multi_match_report.pdf",
+                                   mime="application/pdf", key="ml_mm_pdf_dl", type="primary")
 
     # ---- source ------------------------------------------------------------
     def _source(self, shell, can_edit: bool) -> None:

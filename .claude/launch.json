@@ -4,44 +4,95 @@
     {
       "name": "fap",
       "runtimeExecutable": "C:\\Users\\Essam\\OneDrive\\Desktop\\python\\pythonw.exe",
-      "runtimeArgs": ["C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\3eb67987-44b9-4a0f-a617-493c974546b0\\scratchpad\\app_dev.py"],
+      "runtimeArgs": [
+        "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\3eb67987-44b9-4a0f-a617-493c974546b0\\scratchpad\\app_dev.py"
+      ],
       "port": 8520
     },
     {
       "name": "tb",
       "runtimeExecutable": "C:\\Users\\Essam\\OneDrive\\Desktop\\python\\pythonw.exe",
-      "runtimeArgs": ["-m", "streamlit", "run",
-                      "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\6de28fba-9a72-4eab-9b4c-42bf757c2232\\scratchpad\\tb_harness.py",
-                      "--server.headless", "true", "--server.port", "8521",
-                      "--browser.gatherUsageStats", "false"],
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\6de28fba-9a72-4eab-9b4c-42bf757c2232\\scratchpad\\tb_harness.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8521",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
       "port": 8521
     },
     {
       "name": "tele",
       "runtimeExecutable": "C:\\Users\\Essam\\OneDrive\\Desktop\\python\\pythonw.exe",
-      "runtimeArgs": ["-m", "streamlit", "run",
-                      "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\9ea5a605-991f-4449-b463-5e057266e190\\scratchpad\\tele_harness.py",
-                      "--server.headless", "true", "--server.port", "8522",
-                      "--browser.gatherUsageStats", "false"],
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\9ea5a605-991f-4449-b463-5e057266e190\\scratchpad\\tele_harness.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8522",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
       "port": 8522
     },
     {
       "name": "ml",
       "runtimeExecutable": "C:\\Users\\Essam\\OneDrive\\Desktop\\python\\pythonw.exe",
-      "runtimeArgs": ["-m", "streamlit", "run",
-                      "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\952493cb-6a5c-44b4-b4ec-d1a30bee41a5\\scratchpad\\ml_harness.py",
-                      "--server.headless", "true", "--server.port", "8523",
-                      "--browser.gatherUsageStats", "false"],
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\952493cb-6a5c-44b4-b4ec-d1a30bee41a5\\scratchpad\\ml_harness.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8523",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
       "port": 8523
     },
     {
       "name": "spl",
       "runtimeExecutable": "C:\\Users\\Essam\\OneDrive\\Desktop\\python\\pythonw.exe",
-      "runtimeArgs": ["-m", "streamlit", "run",
-                      "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\952493cb-6a5c-44b4-b4ec-d1a30bee41a5\\scratchpad\\spl_harness.py",
-                      "--server.headless", "true", "--server.port", "8524",
-                      "--browser.gatherUsageStats", "false"],
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\952493cb-6a5c-44b4-b4ec-d1a30bee41a5\\scratchpad\\spl_harness.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8524",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
       "port": 8524
+    },
+    {
+      "name": "mm",
+      "runtimeExecutable": "C:\\Users\\Essam\\OneDrive\\Desktop\\python\\pythonw.exe",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\952493cb-6a5c-44b4-b4ec-d1a30bee41a5\\scratchpad\\mm_harness.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8525",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
+      "port": 8525
     }
   ]
 }

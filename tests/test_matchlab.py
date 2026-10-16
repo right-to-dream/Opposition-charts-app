@@ -482,3 +482,22 @@ def test_second_balls(proxy):
     assert sa["decided"] == sb["decided"] and sa["won"] + sb["won"] == sa["decided"]   # one winner per contest
     for f in (XT.second_balls_map, XT.second_balls_breakdown, XT.second_balls_players):
         f(proxy, a)
+
+
+def test_multimatch_combine_table_and_outputs(md, proxy):
+    from fap.matchlab import charts as CH
+    from fap.matchlab import multimatch as MM
+    items = [MM.MatchItem("1. A", md, "a"), MM.MatchItem("2. B", proxy, "b")]
+    cm = MM.combine(items)
+    assert cm.teams[1] == MM.OPP and len(cm.events) == len(md.events) + len(proxy.events)
+    assert cm.events.groupby("match")["t"].min().is_monotonic_increasing          # matches never overlap in time
+    pid = cm.possessions["poss_id"]
+    assert pid.is_unique
+    tb = MM.comparison_table(items, cm)
+    assert list(tb.columns) == ["1. A", "2. B", "All matches"]
+    assert tb.loc["Passes", "All matches"] == tb.loc["Passes", "1. A"] + tb.loc["Passes", "2. B"]
+    png = CH.to_png(CH.render("pass_map", cm, cm.teams[0]), dpi=30)
+    grid = MM.grid_png([("1. A", png), ("2. B", png)], "t", "s")
+    pdf = MM.pdf_report("t", "s", ["1. A", "2. B"], [("grid", grid),
+                        ("trend", MM.fig_png(MM.trend_figure(tb, ["Passes"], "t"), 40))])
+    assert grid[1:4] == b"PNG" and pdf[:4] == b"%PDF"
