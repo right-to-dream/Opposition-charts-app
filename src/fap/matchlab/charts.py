@@ -923,13 +923,13 @@ def losses_recoveries(md: MatchData, team: str, *, half=None, player=None, theme
     th = theme
     with plt.rc_context(_rc(th)):
         ev = _scope(md, team, half, player)
-        loss = ev[((ev["etype"] == "pass") & (ev["outcome"] == 0)) | ((ev["etype"] == "dribble") & (ev["outcome"] == 0))
-                  | (ev["etype"] == "ball_lost") | ((ev["etype"] == "error") & ev["labels"].map(lambda l: "ball lost" in l))]
+        from fap.matchlab.loader import at_loss, loss_mask
+        loss = at_loss(ev[loss_mask(ev)])              # placed where the ball was lost
         loss = loss[loss["x"].notna()]
         reg = ev[(ev["etype"] == "recovery") | (ev["etype"].isin(["interception", "tackle"]) & ev["labels"].map(lambda l: "won" in l))]
         reg = reg[reg["x"].notna()]
         fig = _figure(th, (14, 8.6), f"{team} — Ball losses & regains", _subtitle(md, team, half, player),
-                      "Loss = unsuccessful pass / dribble / tagged ball lost")
+                      "Loss = unsuccessful pass / dribble / ball lost · drawn where the ball was lost (opponent's next action)")
         ax = fig.add_axes([0.02, 0.1, 0.72, 0.76])
         pitch = _pitch(th)
         pitch.draw(ax=ax)
@@ -1294,7 +1294,8 @@ def player_dashboard(md: MatchData, team: str, *, half=None, player=None, theme:
         rec = pr["receptions"]
         d = pr["defensive_events"]
         d = d[d["x"].notna()]
-        lo = _losses(ev)
+        from fap.matchlab.loader import at_loss
+        lo = at_loss(_losses(ev))
         lo = lo[lo["x"].notna()]
         pitch.scatter(rec["end_x"], rec["end_y"], s=34, color=th.team, alpha=0.7, ax=ax2, zorder=3)
         pitch.scatter(d["x"], d["y"], s=44, marker="D", color=th.accent, edgecolors=th.bg, ax=ax2, zorder=4)

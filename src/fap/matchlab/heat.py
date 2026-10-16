@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from fap.matchlab.loader import MatchData
+from fap.matchlab.loader import MatchData, at_loss, loss_mask  # noqa: F401 (loss_mask re-exported)
 
 KINDS: dict[str, tuple[str, str]] = {
     "activity": ("Activity", "all on-ball & defensive actions"),
@@ -18,7 +18,7 @@ KINDS: dict[str, tuple[str, str]] = {
     "regains": ("Ball regains", "recoveries, interceptions and won tackles"),
     "defensive": ("Defensive actions", "tackles, interceptions, recoveries, blocks, clearances, duels, fouls"),
     "press": ("Pressing", "every press action"),
-    "losses": ("Ball losses", "lost passes and dribbles, ball lost, errors"),
+    "losses": ("Ball losses", "where the ball was lost (lost pass = where the opponent got it)"),
 }
 SHEET = ("activity", "receptions", "passes", "pass_targets", "regains", "defensive", "press", "losses")
 _DEF = ("tackle", "interception", "recovery", "block", "clearance", "duel", "foul")
@@ -32,10 +32,6 @@ def _scope(md: MatchData, team: str, half=None, player=None) -> pd.DataFrame:
         ev = ev[ev["player"] == str(player)]
     return ev
 
-
-def loss_mask(ev: pd.DataFrame) -> pd.Series:
-    return (((ev["etype"] == "pass") & (ev["outcome"] == 0)) | ((ev["etype"] == "dribble") & (ev["outcome"] == 0))
-            | (ev["etype"] == "ball_lost") | ((ev["etype"] == "error") & ev["labels"].map(lambda l: "ball lost" in l)))
 
 
 def regain_mask(ev: pd.DataFrame) -> pd.Series:
@@ -67,7 +63,7 @@ def points(md: MatchData, team: str, kind: str, half=None, player=None) -> pd.Da
     elif kind == "press":
         out = ev[ev["etype"] == "press"]
     elif kind == "losses":
-        out = ev[loss_mask(ev)]
+        out = at_loss(ev[loss_mask(ev)])               # where the ball was lost
     else:
         raise KeyError(kind)
     return out[out["x"].notna() & out["y"].notna()]

@@ -368,6 +368,7 @@ def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
     if ev.attrs.get("late_receives_fixed"):
         notes.append(f"Re-ordered {ev.attrs['late_receives_fixed']} Receive events tagged just after the same player's next action.")
     _infer_pass_ends(ev)
+    _loss_points(ev)
 
     # orientation per (team, half) ---------------------------------------------
     orient: dict = {}
@@ -384,7 +385,8 @@ def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
     ev["attack_sign"] = [1 if orient.get((tm, int(h)), "→") == "→" else -1
                          for tm, h in zip(ev["team"], ev["half"])]
     sign = ev["attack_sign"].to_numpy()
-    for src_x, src_y, dx, dy in (("raw_x", "raw_y", "x", "y"), ("end_raw_x", "end_raw_y", "end_x", "end_y")):
+    for src_x, src_y, dx, dy in (("raw_x", "raw_y", "x", "y"), ("end_raw_x", "end_raw_y", "end_x", "end_y"),
+                                 ("loss_raw_x", "loss_raw_y", "loss_x", "loss_y")):
         rx, ry = ev[src_x].to_numpy(float), ev[src_y].to_numpy(float)
         ev[dx] = np.where(sign > 0, rx, PITCH_L - rx).clip(0, PITCH_L)
         ev[dy] = np.where(sign > 0, PITCH_W - ry, ry).clip(0, PITCH_W)
@@ -396,6 +398,56 @@ def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
     from fap.matchlab import metrics   # local import: metrics depends on loader
     metrics.enrich(md)
     return md
+
+
+def loss_mask(ev: pd.DataFrame) -> pd.Series:
+    """Ball losses: failed passes and dribbles, 'ball lost', and errors tagged 'ball lost'."""
+    return (((ev["etype"] == "pass") & (ev["outcome"] == 0)) | ((ev["etype"] == "dribble") & (ev["outcome"] == 0))
+            | (ev["etype"] == "ball_lost") | ((ev["etype"] == "error") & ev["labels"].map(lambda l: "ball lost" in l)))
+
+
+def at_loss(df: pd.DataFrame) -> pd.DataFrame:
+    """Losses placed where the ball was lost (loss_x / loss_y); the original location is kept in from_x / from_y."""
+    if df.empty or "loss_x" not in df:
+        return df
+    out = df.copy()
+    out["from_x"], out["from_y"] = out["x"], out["y"]
+    has = out["loss_x"].notna()
+    out.loc[has, "x"], out.loc[has, "y"] = out.loc[has, "loss_x"], out.loc[has, "loss_y"]
+    return out
+
+
+def _loss_points(ev: pd.DataFrame, horizon_rows: int = 7, horizon_s: float = 12.0) -> None:
+    """Where each ball loss actually happened (raw frame): a lost pass → its end point (= the opponent's
+    next action / where the ball went out, see ``_infer_pass_ends``); any other loss → the location of the
+    opponent's next action. Falls back to the event's own location. Adds loss_raw_x / loss_raw_y / loss_at."""
+    n = len(ev)
+    lx, ly = np.full(n, np.nan), np.full(n, np.nan)
+    at = np.array([""] * n, dtype=object)
+    et, tm = ev["etype"].to_numpy(), ev["team"].to_numpy()
+    x, y, t, half = ev["raw_x"].to_numpy(float), ev["raw_y"].to_numpy(float), ev["t"].to_numpy(float), ev["half"].to_numpy()
+    ex, ey = ev["end_raw_x"].to_numpy(float), ev["end_raw_y"].to_numpy(float)
+    src = ev["end_source"].to_numpy() if "end_source" in ev else np.array([""] * n, dtype=object)
+    for i in np.where(loss_mask(ev).to_numpy())[0]:
+        if et[i] == "pass" and not np.isnan(ex[i]):
+            lx[i], ly[i] = ex[i], ey[i]
+            at[i] = {"opponent": "opponent's next action", "ball_out": "ball out of play", "offside": "offside",
+                     "tagged": "tagged end point"}.get(src[i], "pass end point")
+            continue
+        for j in range(i + 1, min(n, i + 1 + horizon_rows)):
+            if half[j] != half[i] or t[j] - t[i] > horizon_s:
+                break
+            if np.isnan(x[j]) or et[j] in ("press", "sub_in", "sub_out"):
+                continue
+            if et[j] in ("ball_out", "offside"):
+                lx[i], ly[i], at[i] = x[j], y[j], "ball out of play"
+                break
+            if tm[j] != tm[i]:
+                lx[i], ly[i], at[i] = x[j], y[j], "opponent's next action"
+                break
+        if not at[i] and not np.isnan(x[i]):
+            lx[i], ly[i], at[i] = x[i], y[i], "own location (no opponent action found)"
+    ev["loss_raw_x"], ev["loss_raw_y"], ev["loss_at"] = lx, ly, at
 
 
 def _attack_sign(ev: pd.DataFrame, team: str, half: int) -> int:

@@ -163,8 +163,8 @@ def team_stats(md: "MatchData", team: str, half=None) -> pd.DataFrame:
         add("Set pieces", _row(f"{nm} — ball kept", int((g["outcome"] == 1).sum()), len(g)))
 
     # ball losses
-    lo = ev[((ev["etype"] == "pass") & (ev["outcome"] == 0)) | ((ev["etype"] == "dribble") & (ev["outcome"] == 0))
-            | (ev["etype"] == "ball_lost") | ((ev["etype"] == "error") & _has(ev["labels"], "ball lost"))]
+    from fap.matchlab.loader import at_loss, loss_mask
+    lo = at_loss(ev[loss_mask(ev)])                    # thirds = where the ball was lost
     add("Ball losses", _row("Ball losses", len(lo)))
     for nm, a, b in (("own third", 0, t1), ("middle third", t1, t2), ("final third", t2, PITCH_L + 1)):
         add("Ball losses", _row(f"  · in {nm}", int(((lo["x"] >= a) & (lo["x"] < b)).sum()), len(lo)))
@@ -235,8 +235,9 @@ def buildup(md: "MatchData", team: str, half=None) -> dict:
     pairs = p[(p["outcome"] == 1) & p["receiver"].ne("") & p["receiver"].ne("0") & p["player"].ne("0")]
     out["pairs"] = pairs.groupby(["player", "receiver"]).size().sort_values(ascending=False)
     out["starters"] = b["players"].map(lambda t: t[0] if t else "").value_counts()
-    out["losses"] = own[((own["etype"] == "pass") & (own["outcome"] == 0)) | ((own["etype"] == "dribble") & (own["outcome"] == 0))
-                        | (own["etype"] == "ball_lost") | ((own["etype"] == "error") & _has(own["labels"], "ball lost"))]
+    from fap.matchlab.loader import at_loss, loss_mask
+    lo = at_loss(ev[loss_mask(ev)])
+    out["losses"] = lo[lo["x"] < t1]                   # lost in our own third (where the ball was lost)
     out["gk"] = goalkeeper_passes(md, team, half)
     return out
 
@@ -350,8 +351,9 @@ def final_third(md: "MatchData", team: str, half=None) -> dict:
     out["key_passes"] = kp
     mv = ev[ev["etype"].isin(["pass", "carry"]) & ev["end_x"].notna() & ev["box_entry"]]
     out["box_entries"] = mv.assign(success=(mv["outcome"] == 1) | (mv["etype"] == "carry"))
-    out["losses"] = f3[((f3["etype"] == "pass") & (f3["outcome"] == 0)) | ((f3["etype"] == "dribble") & (f3["outcome"] == 0))
-                       | (f3["etype"] == "ball_lost") | ((f3["etype"] == "error") & _has(f3["labels"], "ball lost"))]
+    from fap.matchlab.loader import at_loss, loss_mask
+    lo = at_loss(ev[loss_mask(ev)])
+    out["losses"] = lo[lo["x"] >= t2]                  # lost in the final third (where the ball was lost)
     out["summary"] = {
         "Actions in final third": len(f3), "Passes (cmp/att)": f"{int((p['outcome'] == 1).sum())}/{len(p)}",
         "Key passes": int(ev[ev["etype"] == "pass"]["key_pass"].sum()),

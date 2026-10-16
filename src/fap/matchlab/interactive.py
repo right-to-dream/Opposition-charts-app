@@ -490,13 +490,13 @@ def defensive(md: MatchData, team: str, *, half=None, player=None, theme: Theme 
 def losses(md: MatchData, team: str, *, half=None, player=None, theme: Theme = DARK, names: dict | None = None) -> go.Figure:
     th, names = theme, names or {}
     ev = _scope(md, team, half, player)
-    loss = ev[((ev["etype"] == "pass") & (ev["outcome"] == 0)) | ((ev["etype"] == "dribble") & (ev["outcome"] == 0))
-              | (ev["etype"] == "ball_lost") | ((ev["etype"] == "error") & ev["labels"].map(lambda l: "ball lost" in l))]
+    from fap.matchlab.loader import at_loss, loss_mask
+    loss = at_loss(ev[loss_mask(ev)])                  # placed where the ball was lost
     loss = loss[loss["x"].notna()]
     reg = ev[(ev["etype"] == "recovery") | (ev["etype"].isin(["interception", "tackle"]) & ev["labels"].map(lambda l: "won" in l))]
     reg = reg[reg["x"].notna()]
     fig = _pitch(th, f"{team} — Ball losses & regains", _subtitle(md, team, half, player,
-                 f"{len(loss)} losses ({int((loss['x'] < md.thirds[0]).sum())} in own third) · {len(reg)} regains"))
+                 f"{len(loss)} losses ({int((loss['x'] < md.thirds[0]).sum())} in own third) · {len(reg)} regains · ✕ = where the ball was lost"))
     for x in md.thirds:
         fig.add_shape(type="line", x0=x, x1=x, y0=0, y1=PITCH_W, line=dict(color=th.line, width=1, dash="dot"), layer="below")
     lt = {"pass": "Pass lost", "dribble": "Dribble lost", "ball_lost": "Ball lost", "error": "Ball lost (error)"}
@@ -506,7 +506,8 @@ def losses(md: MatchData, team: str, *, half=None, player=None, theme: Theme = D
             continue
         txt = [_point_hover(r, names, lt.get(r["etype"], r["etype"]),
                             f"{r['pass_type'] + ' · ' if r['etype'] == 'pass' and r['pass_type'] else ''}"
-                            f"{', '.join(r['labels'])}") for _, r in sub.iterrows()]
+                            f"{', '.join(r['labels'])}<br>lost at: {r.get('loss_at') or '–'} · played from "
+                            f"x {_fmt(r.get('from_x'), 0)}, y {_fmt(r.get('from_y'), 0)}") for _, r in sub.iterrows()]
         fig.add_trace(go.Scatter(x=sub["x"], y=sub["y"], mode="markers", name=f"{name} ({len(sub)})", text=txt,
                                  hovertemplate="%{text}<extra></extra>",
                                  marker=dict(size=size, color=th.bad, symbol="x", line=dict(color=edge, width=1.2))))
@@ -1036,7 +1037,8 @@ def player_defence(md: MatchData, team: str, player: str, *, half=None, theme: T
     th, names = theme, names or {}
     me = _scope(md, team, half, player)
     d = me[me["etype"].isin(list(_DEF)) & me["x"].notna()]
-    lo = _losses(me)
+    from fap.matchlab.loader import at_loss
+    lo = at_loss(_losses(me))
     lo = lo[lo["x"].notna()]
     cp = CP.analyse(md, team, md.cp_window, half)
     cp_by_loss = cp.set_index("loss_event_id") if not cp.empty else pd.DataFrame()

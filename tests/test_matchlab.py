@@ -459,3 +459,12 @@ def test_heat_kinds_and_new_charts(md):
     IX.build("switches", md, team)
     sw = md.events[md.events["switch"]]
     assert (sw["etype"] == "pass").all() and ((sw["end_y"] - sw["y"]).abs() >= 30).all()
+
+
+def test_loss_drawn_where_the_ball_was_lost(proxy):
+    from fap.matchlab.loader import at_loss, loss_mask
+    ev = proxy.events
+    lo = at_loss(ev[loss_mask(ev)])
+    assert lo["loss_at"].ne("").all()
+    lp = lo[(lo["etype"] == "pass") & lo["end_x"].notna()]
+    assert (lp["x"] == lp["end_x"]).all() and (lp["from_x"] == ev.loc[lp.index, "x"]).all()
