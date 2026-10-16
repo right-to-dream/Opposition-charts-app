@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"/>
+<style>html,body{margin:0;padding:0;background:transparent;font:12px "Segoe UI",Inter,Arial,sans-serif;color:#8e99ab}</style>
+</head>
+<body>
+<div id="msg"></div>
+<div id="work" style="position:absolute;left:-10000px;top:0"></div>
+<script>
+(function(){
+"use strict";
+// Renders Plotly figures to PNG in the browser (exactly what the page shows) and hands the images to Python.
+function send(t,x){ window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:t},x||{}),"*"); }
+function value(v){ send("streamlit:setComponentValue",{dataType:"json",value:v}); }
+var done={}, pending=null;
+function loadPlotly(cb){
+  if(window.Plotly) return cb();
+  var s=document.createElement("script"); s.src="plotly.min.js"; s.onload=cb;
+  s.onerror=function(){ var c=document.createElement("script"); c.src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"; c.onload=cb;
+    c.onerror=function(){ value({nonce:pending, error:"Could not load the chart renderer"}); }; document.head.appendChild(c); };
+  document.head.appendChild(s);
+}
+async function run(a){
+  var out=[];
+  for(var i=0;i<a.figs.length;i++){
+    var f=a.figs[i], fig=JSON.parse(f.fig), lay=fig.layout||{};
+    document.getElementById("msg").textContent="Rendering "+(i+1)+" / "+a.figs.length+" …";
+    try{
+      var url=await Plotly.toImage({data:fig.data, layout:lay}, {format:"png", width:f.w, height:f.h, scale:a.scale||3});
+      out.push({name:f.name, png:url});
+    }catch(e){ out.push({name:f.name, error:String(e)}); }
+  }
+  document.getElementById("msg").textContent="";
+  value({nonce:a.nonce, images:out});
+}
+window.addEventListener("message", function(ev){
+  var d=ev.data; if(!d || d.type!=="streamlit:render") return; var a=d.args||{};
+  send("streamlit:setFrameHeight",{height:a.figs&&a.figs.length>1?18:1});
+  if(!a.nonce || done[a.nonce]) return; done[a.nonce]=1; pending=a.nonce;
+  loadPlotly(function(){ run(a); });
+});
+send("streamlit:componentReady",{apiVersion:1});
+})();
+</script>
+</body>
+</html>

@@ -12,3 +12,4 @@ nohup.out
 .DS_Store
 .idea/
 .vscode/
+src/fap/ui/builtin/frontend/plotly_png/plotly.min.js

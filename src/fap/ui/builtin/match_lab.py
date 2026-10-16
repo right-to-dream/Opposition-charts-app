@@ -14,6 +14,7 @@ import base64
 import hashlib
 import io
 import re
+import uuid
 
 import pandas as pd
 import streamlit as st
@@ -386,40 +387,62 @@ class MatchLabPage(Page):
         half_tag = {None: "", 1: "_1H", 2: "_2H"}.get(half, "")
         bucket: list = []                     # (filename, html) of the current sub-tab, for "download all"
 
-        def show(fig, key):
-            """Interactive chart + its downloads: camera icon = PNG (3× resolution, report quality),
-            button = interactive HTML (hover kept)."""
+        def show(fig, key, w: int = 1300):
+            """Interactive chart + "Prepare PNG" → "Download PNG" (rendered in the browser at 3× = report quality)."""
+            from fap.ui.builtin import plotly_png as PP
             title = re.sub(r"<[^>]+>", "", (fig.layout.title.text or key).split("<br>")[0]).strip() or key
             fname = re.sub(r"[^A-Za-z0-9]+", "_", f"{team}_{title}{half_tag}").strip("_")
             cfg = {"displaylogo": False, "scrollZoom": True, "displayModeBar": True,
-                   "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-                   "toImageButtonOptions": {"format": "png", "scale": 3, "filename": fname}}
+                   "modeBarButtonsToRemove": ["lasso2d", "select2d", "toImage"]}
             st.plotly_chart(fig, use_container_width=True, key=f"ml_ta_{key}", theme=None, config=cfg)
-            html = fig.to_html(include_plotlyjs="cdn", full_html=True, config=cfg)
-            st.download_button("Download chart (interactive HTML)", html.encode("utf-8"), file_name=f"{fname}.html",
-                               mime="text/html", key=f"ml_ta_dl_{key}")
-            bucket.append((fname, fig, cfg))
+            size = (w, int(fig.layout.height or 520))
+            stamp = hashlib.md5(fig.to_json().encode("utf-8")).hexdigest()
+            bucket.append((fname, fig, size))
+            req, got = st.session_state.get(f"_ml_pngreq_{key}"), st.session_state.get(f"_ml_png_{key}")
+            c1, c2, _ = st.columns([1, 1, 2.2])
+            if c1.button("Prepare PNG", key=f"ml_ta_prep_{key}", use_container_width=True):
+                req = (stamp, f"{key}-{stamp[:8]}-{uuid.uuid4().hex[:8]}")
+                st.session_state[f"_ml_pngreq_{key}"] = req
+            if req and req[0] == stamp and not (got and got[0] == req[1]):
+                with c2:
+                    res = PP.render([(fname, fig, *size)], req[1], key=f"ml_ta_pp_{key}")
+                if res:
+                    got = (req[1], res[0][1])
+                    st.session_state[f"_ml_png_{key}"] = got
+                else:
+                    c2.caption("Rendering…")
+            if req and req[0] == stamp and got and got[0] == req[1]:
+                c2.download_button("Download PNG", got[1], file_name=f"{fname}.png", mime="image/png", type="primary",
+                                   key=f"ml_ta_dl_{key}", use_container_width=True)
 
         def download_all(section: str):
-            """ZIP of the section's charts, built only on request (keeps page refreshes fast)."""
+            """ZIP of the section's charts as PNGs, rendered only on request (keeps page refreshes fast)."""
+            import zipfile
+            from fap.ui.builtin import plotly_png as PP
             if not bucket:
                 return
             st.divider()
-            zkey = f"_ml_zip_{section}"
-            stamp = (ctx["sig"], team, half, ctx["theme"])
+            stamp = hashlib.md5("".join(f.to_json() for _, f, _ in bucket).encode("utf-8")).hexdigest()
+            rkey, zkey = f"_ml_zipreq_{section}", f"_ml_zip_{section}"
+            req, got = st.session_state.get(rkey), st.session_state.get(zkey)
             c1, c2 = st.columns([1, 1])
-            if c1.button(f"Prepare all {section} charts (ZIP)", key=f"ml_ta_zipprep_{section}", use_container_width=True):
-                import zipfile
-                from plotly.offline import get_plotlyjs
-                buf = io.BytesIO()
-                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                    for name, f, c in bucket:             # offline: every chart uses the bundled plotly.min.js
-                        z.writestr(f"{name}.html", f.to_html(include_plotlyjs="directory", full_html=True, config=c))
-                    z.writestr("plotly.min.js", get_plotlyjs())
-                st.session_state[zkey] = (stamp, buf.getvalue())
-            got = st.session_state.get(zkey)
-            if got and got[0] == stamp:
-                c2.download_button(f"Download {section} ZIP (works offline)", got[1],
+            if c1.button(f"Prepare all {section} charts (PNG, ZIP)", key=f"ml_ta_zipprep_{section}", use_container_width=True):
+                req = (stamp, f"zip-{stamp[:8]}-{uuid.uuid4().hex[:8]}")
+                st.session_state[rkey] = req
+            if req and req[0] == stamp and not (got and got[0] == req[1]):
+                with c2:
+                    res = PP.render([(n, f, *sz) for n, f, sz in bucket], req[1], key=f"ml_ta_ppz_{section}")
+                if res:
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                        for i, (n, data) in enumerate(res, start=1):
+                            z.writestr(f"{i:02d}_{n}.png", data)
+                    got = (req[1], buf.getvalue())
+                    st.session_state[zkey] = got
+                else:
+                    c2.caption(f"Rendering {len(bucket)} charts…")
+            if req and req[0] == stamp and got and got[0] == req[1]:
+                c2.download_button(f"Download {section} (ZIP of PNGs)", got[1],
                                    file_name=re.sub(r"[^A-Za-z0-9]+", "_", f"{team}_{section}{half_tag}") + ".zip",
                                    mime="application/zip", key=f"ml_ta_zip_{section}", type="primary",
                                    use_container_width=True)
@@ -428,9 +451,8 @@ class MatchLabPage(Page):
         def cards(items):
             C.render_metric_row([C.metric_card_html(a, b, hint=c) for a, b, c in items])
 
-        st.caption("Download: the camera icon at the top-right of every chart saves it as a high-resolution PNG "
-                   "(for reports); the button under it saves an interactive HTML file (hover kept); each section "
-                   "ends with a ZIP of all its charts.")
+        st.caption("Download: press “Prepare PNG” under a chart, then “Download PNG” (high resolution, for reports). "
+                   "Each section ends with a ZIP of all its charts as PNGs.")
         sub = st.tabs(["Team stats", "Build-up", "Progression", "Final third"])
         with sub[0]:
             side = T.stats_side_by_side(md, half)
@@ -442,7 +464,7 @@ class MatchLabPage(Page):
                 cc = st.columns(2)
                 for col, cat in zip(cc, cats[i:i + 2]):
                     with col:
-                        show(XT.stats_category(side, cat, md.teams, theme=th), f"stats_{cat}")
+                        show(XT.stats_category(side, cat, md.teams, theme=th), f"stats_{cat}", w=900)
             with st.expander("Full statistics table", expanded=False):
                 st.dataframe(side.round(1), use_container_width=True, hide_index=True)
                 st.download_button("Team statistics (CSV)", side.round(2).to_csv(index=False).encode("utf-8-sig"),
@@ -469,12 +491,12 @@ class MatchLabPage(Page):
                 show(XT.buildup_flow(md, team, half=half, theme=th), "flow")
                 c1, c2 = st.columns(2)
                 with c1:
-                    show(XT.pass_pairs_network(md, team, b["passes"], "Passing in our own third", theme=th, names=names), "net")
+                    show(XT.pass_pairs_network(md, team, b["passes"], "Passing in our own third", theme=th, names=names), "net", w=900)
                 with c2:
-                    show(XT.gk_distribution(md, team, half=half, theme=th, names=names), "gk")
+                    show(XT.gk_distribution(md, team, half=half, theme=th, names=names), "gk", w=900)
                 c1, c2 = st.columns(2)
                 with c1:
-                    show(XT.zone_losses(md, team, b["losses"], "Ball losses in our own third", theme=th, names=names), "loss")
+                    show(XT.zone_losses(md, team, b["losses"], "Ball losses in our own third", theme=th, names=names), "loss", w=900)
                 with c2:
                     st.markdown("**Who starts the build-up**")
                     stt = b["starters"].head(8)
@@ -505,9 +527,9 @@ class MatchLabPage(Page):
             show(XT.entry_breakdown(md, team, half=half, theme=th, names=names), "entrybars")
             c1, c2 = st.columns([1.4, 1])
             with c1:
-                show(XT.progressive_origins(md, team, half=half, theme=th, names=names), "origins")
+                show(XT.progressive_origins(md, team, half=half, theme=th, names=names), "origins", w=900)
             with c2:
-                show(XT.lines_broken(md, team, half=half, theme=th), "lines")
+                show(XT.lines_broken(md, team, half=half, theme=th), "lines", w=900)
             show(XT.time_to_final_third(md, team, half=half, theme=th), "speed")
             show(XT.pass_pairs_network(md, team, pr["middle_passes"], "Passing in the middle third", theme=th, names=names), "midnet")
             download_all("Progression")
@@ -518,16 +540,16 @@ class MatchLabPage(Page):
             show(XT.f3_channels(md, team, half=half, theme=th), "channels")
             c1, c2 = st.columns([1.4, 1])
             with c1:
-                show(XT.chance_creation(md, team, half=half, theme=th, names=names), "chances")
+                show(XT.chance_creation(md, team, half=half, theme=th, names=names), "chances", w=900)
             with c2:
-                show(XT.shot_sources(md, team, half=half, theme=th), "sources")
-                show(XT.crosses_by_flank(md, team, half=half, theme=th), "crossflank")
+                show(XT.shot_sources(md, team, half=half, theme=th), "sources", w=900)
+                show(XT.crosses_by_flank(md, team, half=half, theme=th), "crossflank", w=900)
             c1, c2 = st.columns(2)
             with c1:
-                show(XT.zone_losses(md, team, f3["losses"], "Ball losses in the final third", theme=th, names=names), "f3loss")
+                show(XT.zone_losses(md, team, f3["losses"], "Ball losses in the final third", theme=th, names=names), "f3loss", w=900)
             with c2:
                 f3p = f3["events"][f3["events"]["etype"] == "pass"]
-                show(XT.pass_pairs_network(md, team, f3p, "Passing in the final third", theme=th, names=names), "f3net")
+                show(XT.pass_pairs_network(md, team, f3p, "Passing in the final third", theme=th, names=names), "f3net", w=900)
             download_all("Final third")
 
     # ---- counter-press ------------------------------------------------------
