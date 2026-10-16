@@ -476,7 +476,7 @@ class MatchLabPage(Page):
 
         st.caption("Download: press “Prepare PNG” under a chart, then “Download PNG” (high resolution, for reports). "
                    "Each section ends with a ZIP of all its charts as PNGs.")
-        sub = st.tabs(["Team stats", "Build-up", "Progression", "Final third"])
+        sub = st.tabs(["Team stats", "Build-up", "Progression", "Final third", "Second balls"])
         with sub[0]:
             side = T.stats_side_by_side(md, half)
             order = ["Possession", "Passing", "Attacking", "Duels", "Defending", "Discipline", "Set pieces", "Ball losses"]
@@ -576,6 +576,36 @@ class MatchLabPage(Page):
                 f3p = f3["events"][f3["events"]["etype"] == "pass"]
                 show(XT.pass_pairs_network(md, team, f3p, "Passing in the final third", theme=th, names=names), "f3net", w=900)
             download_all("Final third")
+        with sub[4]:
+            from fap.matchlab import secondball as SB
+            sb = SB.summary(md, team, half)
+            so = SB.summary(md, md.opponent(team), half)
+            st.caption(f"Second ball = the first team to control the loose ball within {SB.WINDOW:.0f} s of a contested "
+                       "first contact (clearance, aerial duel, or a long / high ball nobody controlled cleanly). "
+                       "Out of play / fouls first = no winner.")
+            pct = lambda v: "–" if v != v else f"{v:.0f}%"  # noqa: E731
+            cards([
+                ("Second balls won", f"{sb['won']}/{sb['decided']}", f"{pct(sb['won %'])} · {md.opponent(team)} {so['won']}"),
+                ("Won → our final third", str(sb.get("won → final third", 0)), f"{sb.get('won → shot', 0)} led to a shot"),
+                ("Lost → their final third", str(sb.get("lost → opp. final third", 0)),
+                 f"{sb.get('lost → opp. shot', 0)} led to their shot"),
+                ("Aerial duels", f"{sb.get('Aerial duel: won', 0)}/{sb.get('Aerial duel: decided', 0)}", "second ball won"),
+                ("After clearances", f"{sb.get('Clearance: won', 0)}/{sb.get('Clearance: decided', 0)}", "second ball won"),
+                ("Situations", str(sb["contests"]), f"{sb['contests'] - sb['decided']} without a winner"),
+            ])
+            show(XT.second_balls_map(md, team, half=half, theme=th, names=names), "sb_map")
+            c1, c2 = st.columns([1.5, 1])
+            with c1:
+                show(XT.second_balls_breakdown(md, team, half=half, theme=th), "sb_break", w=900)
+            with c2:
+                show(XT.second_balls_players(md, team, half=half, theme=th, names=names), "sb_players", w=700)
+            with st.expander("Every second-ball situation", expanded=False):
+                tb = SB.for_team(md, team, half)
+                if not tb.empty:
+                    st.dataframe(tb[["minute", "kind", "contact_team", "contact_player", "contact_etype", "outcome",
+                                     "winner", "winner_player", "win_etype", "seconds", "third", "then_final_third",
+                                     "then_shot"]].round(2), use_container_width=True, hide_index=True)
+            download_all("Second balls")
 
     # ---- counter-press ------------------------------------------------------
     def _counterpress(self, ctx: dict) -> None:

@@ -178,6 +178,8 @@ def player_stats(md: "MatchData", team: str, half: int | None = None) -> pd.Data
     me = ev[(ev["team"] == team) & ev["player"].ne("") & ev["player"].ne("0")]
     passes = ev[(ev["team"] == team) & (ev["etype"] == "pass") & (ev["outcome"] == 1)]
     rows = []
+    from fap.matchlab import secondball as SB
+    sb_won = SB.players(md, team, half)
     for pl, g in me.groupby("player"):
         r: dict = {"player": pl}
         tk = g[g["etype"] == "tackle"]
@@ -214,6 +216,7 @@ def player_stats(md: "MatchData", team: str, half: int | None = None) -> pd.Data
         r["Shots"] = int((g["etype"] == "shot").sum())
         r["xG"] = round(float(g["xg"].sum()), 2)
         r["Ball losses"] = len(_losses(g))
+        r["Second balls won"] = int(sb_won.get(pl, 0))
         r["Actions"] = int((~g["derived"].astype(bool)).sum())
         rows.append(r)
     out = pd.DataFrame(rows)
@@ -240,6 +243,7 @@ LEADERBOARDS = {
         ("Interceptions (won · rest cleared)", "Interceptions", "Interceptions won", "Interceptions"),
         ("Duels", "Duels", "Duels won", "Duels decided"),
         ("Recoveries", "Recoveries", None, None),
+        ("Second balls won", "Second balls won", None, None),
         ("Presses", "Presses", "Presses successful", "Presses tagged"),
         ("Blocks", "Blocks", None, None),
         ("Clearances", "Clearances", None, None),
@@ -263,7 +267,8 @@ COMPARE_SET = [
     ("Progressive receptions", "Progressive receptions", True), ("Dribbles successful", "Dribbles successful", True),
     ("Shots", "Shots", True), ("xG", "xG", True), ("Defensive actions", "Defensive actions", True),
     ("Tackles won", "Tackles won", True), ("Interceptions won", "Interceptions won", True),
-    ("Duels won", "Duels won", True), ("Recoveries", "Recoveries", True), ("Ball losses", "Ball losses", False),
+    ("Duels won", "Duels won", True), ("Recoveries", "Recoveries", True), ("Second balls won", "Second balls won", True),
+    ("Ball losses", "Ball losses", False),
 ]
 
 

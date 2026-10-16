@@ -123,6 +123,10 @@ def team_stats(md: "MatchData", team: str, half=None) -> pd.DataFrame:
     tk = ev[ev["etype"] == "tackle"]
     add("Duels", _row("Tackles — won", int(_has(tk["labels"], "won").sum()), len(tk), "rest = cleared"))
     add("Duels", _row("Dribbles — completed", int((dr["outcome"] == 1).sum()), len(dr)))
+    from fap.matchlab import secondball as SB
+    sb = SB.summary(md, team, half)
+    add("Duels", _row("Second balls — won", int(sb.get("won", 0)), int(sb.get("decided", 0)),
+                      f"after {SB.WINDOW:.0f} s · clearances, aerial duels, long balls"))
     add("Duels", _row("Dribbled past (opponent beat us)", int((ev["etype"] == "dribbled_past").sum())))
 
     # defending

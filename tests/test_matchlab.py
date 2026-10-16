@@ -468,3 +468,17 @@ def test_loss_drawn_where_the_ball_was_lost(proxy):
     assert lo["loss_at"].ne("").all()
     lp = lo[(lo["etype"] == "pass") & lo["end_x"].notna()]
     assert (lp["x"] == lp["end_x"]).all() and (lp["from_x"] == ev.loc[lp.index, "x"]).all()
+
+
+def test_second_balls(proxy):
+    from fap.matchlab import interactive_team as XT
+    from fap.matchlab import secondball as SB
+    c = SB.contests(proxy)
+    assert set(c["kind"]) <= set(SB.KINDS)
+    won = c[c["result"] == "Won"]
+    assert (won["seconds"] <= SB.WINDOW).all() and won["winner"].ne("").all()
+    a, b = proxy.teams[:2]
+    sa, sb = SB.summary(proxy, a), SB.summary(proxy, b)
+    assert sa["decided"] == sb["decided"] and sa["won"] + sb["won"] == sa["decided"]   # one winner per contest
+    for f in (XT.second_balls_map, XT.second_balls_breakdown, XT.second_balls_players):
+        f(proxy, a)

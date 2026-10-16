@@ -434,3 +434,97 @@ def crosses_by_flank(md: MatchData, team: str, *, half=None, theme: Theme = DARK
     _base(fig, th, f"{team} — Crosses by flank", f"{len(cr)} crosses · {int((cr['outcome'] == 1).sum())} completed", 320)
     fig.update_layout(barmode="overlay")
     return fig
+
+
+# ------------------------------------------------------------------ second balls
+def second_balls_map(md: MatchData, team: str, *, half=None, theme: Theme = DARK, names: dict | None = None) -> go.Figure:
+    """Where the second balls fall and who wins them (team's attacking frame)."""
+    from fap.matchlab import secondball as SB
+    th, names = theme, names or {}
+    c = SB.for_team(md, team, half)
+    d = c[c["outcome"] != "No winner"] if not c.empty else c
+    won = int((d["outcome"] == "Won").sum()) if len(d) else 0
+    fig = _pitch(th, f"{team} — Second balls", f"{team} vs {md.opponent(team)}  ·  {won}/{len(d)} won  ·  "
+                 f"loose ball controlled within {SB.WINDOW:.0f} s of a clearance, aerial duel or long ball  ·  "
+                 "hover any point", height=560)
+    for x in md.thirds:
+        fig.add_shape(type="line", x0=x, x1=x, y0=0, y1=PITCH_W, line=dict(color=th.line, width=1, dash="dot"), layer="below")
+    if d.empty:
+        _empty(fig, th, "No second-ball situations")
+        return fig
+    xs, ys = [], []
+    for _, r in d.iterrows():
+        if pd.notna(r["contact_x"]) and pd.notna(r["x"]):
+            xs += [r["contact_x"], r["x"], None]
+            ys += [r["contact_y"], r["y"], None]
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color=th.muted, width=1, dash="dot"), opacity=0.5,
+                             hoverinfo="skip", showlegend=False))
+
+    def who(team_, p):
+        p = "" if p in ("", "0") else p
+        return f"{team_} {_who(p, names) if p else ''}".strip()
+
+    def hover(r):
+        nxt = ("shot" if r["then_shot"] else "reached the final third" if r["then_final_third"] else "no final third")
+        nxt = f"{'we' if r['outcome'] == 'Won' else r['winner']}: {nxt} (within {SB.FOLLOW_S:.0f} s)"
+        return (f"<b>{'WON' if r['outcome'] == 'Won' else 'LOST'}</b> · {_mmss(r['minute'])} · {r['kind']}<br>"
+                f"first contact: {who(r['contact_team'], r['contact_player'])} ({r['contact_etype']})<br>"
+                f"second ball: {who(r['winner'], r['winner_player'])} ({r['win_etype']}) after {r['seconds']:.1f} s<br>"
+                f"then: {nxt}<br>x {r['x']:.0f}, y {r['y']:.0f}")
+    for oc, col, sym, size in (("Lost", th.opp, "x", 11), ("Won", th.team, "circle", 12)):
+        g = d[d["outcome"] == oc]
+        if g.empty:
+            continue
+        ring = g["then_shot"] | g["then_final_third"]
+        fig.add_trace(go.Scatter(x=g["x"], y=g["y"], mode="markers", name=f"{oc} ({len(g)})",
+                                 text=[hover(r) for _, r in g.iterrows()], hovertemplate="%{text}<extra></extra>",
+                                 marker=dict(size=size, color=col, symbol=sym,
+                                             line=dict(color=np.where(ring, th.accent, th.bg).tolist(), width=np.where(ring, 2.2, 1).tolist()))))
+    fig.add_annotation(x=PITCH_L, y=-4.6, xanchor="right", showarrow=False, font=dict(size=10, color=th.muted),
+                       text="gold ring = led to the final third / a shot")
+    return fig
+
+
+def second_balls_breakdown(md: MatchData, team: str, *, half=None, theme: Theme = DARK) -> go.Figure:
+    """Won vs lost by first-contact type and by zone, both teams' view in one."""
+    from fap.matchlab import secondball as SB
+    th = theme
+    c = SB.for_team(md, team, half)
+    d = c[c["outcome"] != "No winner"] if not c.empty else c
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("By first contact", "By zone (where the second ball fell)"),
+                        horizontal_spacing=0.18)
+    groups = [("kind", list(SB.KINDS), 1), ("third", ["Defensive third", "Middle third", "Final third"], 2)]
+    for col_name, cats, ci in groups:
+        w = [int(((d[col_name] == k) & (d["outcome"] == "Won")).sum()) if len(d) else 0 for k in cats]
+        l_ = [int(((d[col_name] == k) & (d["outcome"] == "Lost")).sum()) if len(d) else 0 for k in cats]
+        for vals, name, color in ((w, f"{team} won", th.team), (l_, f"{md.opponent(team)} won", th.opp)):
+            fig.add_trace(go.Bar(y=cats, x=vals, orientation="h", name=name, marker_color=color, showlegend=ci == 1,
+                                 text=[str(v) if v else "" for v in vals], textposition="inside",
+                                 hovertext=[f"<b>{k}</b><br>{name}: {v} of {a + b}" + (f" ({v / (a + b) * 100:.0f}%)" if a + b else "")
+                                            for k, v, a, b in zip(cats, vals, w, l_)], hoverinfo="text"), 1, ci)
+        for k, a, b in zip(cats, w, l_):
+            if a + b:
+                fig.add_annotation(x=a + b, y=k, xref=f"x{ci if ci > 1 else ''}", yref=f"y{ci if ci > 1 else ''}",
+                                   text=f"  {a / (a + b) * 100:.0f}%", showarrow=False, xanchor="left",
+                                   font=dict(color=th.text, size=12))
+    _base(fig, th, f"{team} — Second balls won", f"{len(d)} decided · % = {team}'s share", 380)
+    fig.update_layout(barmode="stack", legend=dict(orientation="h", y=1.18, x=1, xanchor="right"))
+    fig.update_xaxes(visible=False)
+    for a in fig.layout.annotations[:2]:
+        a.font = dict(color=th.muted, size=12)
+    return fig
+
+
+def second_balls_players(md: MatchData, team: str, *, half=None, theme: Theme = DARK, names: dict | None = None) -> go.Figure:
+    from fap.matchlab import secondball as SB
+    th, names = theme, names or {}
+    s = SB.players(md, team, half).head(10).iloc[::-1]
+    fig = go.Figure(go.Bar(y=[_who(p, names) for p in s.index], x=s.values, orientation="h", marker_color=th.team,
+                           text=s.values, textposition="outside", cliponaxis=False,
+                           hovertext=[f"<b>{_who(p, names)}</b><br>{v} second balls won" for p, v in s.items()],
+                           hoverinfo="text"))
+    _base(fig, th, f"{team} — Who wins the second balls", "second balls won per player", 120 + 34 * max(len(s), 1))
+    fig.update_xaxes(visible=False, range=[0, (s.max() if len(s) else 1) * 1.25])
+    if s.empty:
+        _empty(fig, th, "No second balls won")
+    return fig
