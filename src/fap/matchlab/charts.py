@@ -959,7 +959,7 @@ def phases_in_possession(md: MatchData, team: str, *, half=None, player=None, th
         ev = _scope(md, team, half, None)
         fig = _figure(th, (16, 9.6), f"{team} — Phases of play · in possession",
                       _subtitle(md, team, half, None, "phase = where the ball is (x)"),
-                      f"Arrows = progressive passes · ✕ = ball losses   |   Build-up < {md.thirds[0]:.0f} m ≤ Progression < {md.thirds[1]:.0f} m ≤ Final third")
+                      f"Arrows = progressive passes · ✕ = ball losses (where the ball was lost)   |   Build-up < {md.thirds[0]:.0f} m ≤ Progression < {md.thirds[1]:.0f} m ≤ Final third")
         ax = fig.add_axes([0.02, 0.37, 0.62, 0.5])
         pitch = _pitch(th)
         pitch.draw(ax=ax)
@@ -968,7 +968,9 @@ def phases_in_possession(md: MatchData, team: str, *, half=None, player=None, th
         prog = ev[(ev["etype"] == "pass") & ev["progressive"] & (ev["outcome"] == 1)]
         pitch.arrows(prog["x"], prog["y"], prog["end_x"], prog["end_y"], color=th.text, alpha=0.35, width=1.2,
                      headwidth=4, headlength=4, ax=ax, zorder=2)
-        loss = ev[(ev["etype"].isin(["pass", "dribble"])) & (ev["outcome"] == 0) & ev["x"].notna()]
+        from fap.matchlab.loader import at_loss, loss_mask
+        loss = at_loss(ev[loss_mask(ev)])              # placed where the ball was lost
+        loss = loss[loss["x"].notna()]
         pitch.scatter(loss["x"], loss["y"], s=36, marker="X", color=th.bad, alpha=0.8, ax=ax, zorder=3)
         t1, t2 = md.thirds
         for (a, b), (_, r), col in zip(((0, t1), (t1, t2), (t2, PITCH_L)), tab.iterrows(), cols):

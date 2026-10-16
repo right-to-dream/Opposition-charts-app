@@ -73,7 +73,8 @@ def in_possession_table(md: "MatchData", team: str, half: int | None = None) -> 
         g = me[me["phase"] == ph]
         p = g[g["etype"] == "pass"]
         comp = p["outcome"] == 1
-        losses = int((p["outcome"] == 0).sum() + ((g["etype"] == "dribble") & (g["outcome"] == 0)).sum())
+        from fap.matchlab.loader import loss_mask
+        losses = int(loss_mask(g).sum())
         top = g[g["player"].ne("") & g["player"].ne("0")]["player"].value_counts().head(3)
         rows.append({
             "Phase": ph, "Actions": len(g), "Share %": _pct(len(g), total),
@@ -81,7 +82,8 @@ def in_possession_table(md: "MatchData", team: str, half: int | None = None) -> 
             "Forward %": _pct((p["direction"] == "Forward").sum(), len(p)),
             "Progressive": int((p["progressive"] & comp).sum() + ((g["etype"] == "carry") & g["progressive"]).sum()),
             "Line breaks": int((p["line_break"] & comp).sum()),
-            "Losses": losses, "Loss %": _pct(losses, len(p) + (g["etype"] == "dribble").sum()),
+            "Losses": losses, "Loss %": _pct(losses, len(p) + (g["etype"].isin(["dribble", "ball_lost"])).sum()
+                                             + (g["etype"].eq("error") & loss_mask(g)).sum()),
             "Avg pass (m)": float(p["length"].mean()) if len(p) else np.nan,
             "Under pressure": int(g["under_pressure"].sum()),
             "Key players": ", ".join(f"#{k} ({v})" for k, v in top.items()),

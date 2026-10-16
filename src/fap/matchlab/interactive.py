@@ -869,10 +869,14 @@ def phases_in(md: MatchData, team: str, *, half=None, player=None, theme: Theme 
                            showarrow=False, yanchor="bottom", font=dict(size=12, color=col))
     prog = ev[(ev["etype"] == "pass") & ev["progressive"] & (ev["outcome"] == 1) & ev["end_x"].notna()]
     _add_moves(fig, prog, th.text, "Progressive pass", names, th, width=1.4)
-    loss = ev[ev["etype"].isin(["pass", "dribble"]) & (ev["outcome"] == 0) & ev["x"].notna()]
+    from fap.matchlab.loader import at_loss, loss_mask
+    loss = at_loss(ev[loss_mask(ev)])                  # placed where the ball was lost
+    loss = loss[loss["x"].notna()]
     if len(loss):
         fig.add_trace(go.Scatter(x=loss["x"], y=loss["y"], mode="markers", name=f"Ball loss ({len(loss)})",
-                                 text=[_point_hover(r, names, f"Loss — {r['etype']}", f"phase: {r['phase'] or '–'}")
+                                 text=[_point_hover(r, names, f"Loss — {r['etype']}",
+                                                    f"phase: {r['phase'] or '–'}<br>lost at: {r.get('loss_at') or '–'} · "
+                                                    f"played from x {_fmt(r.get('from_x'), 0)}, y {_fmt(r.get('from_y'), 0)}")
                                        for _, r in loss.iterrows()], hovertemplate="%{text}<extra></extra>",
                                  marker=dict(size=9, color=th.bad, symbol="x")))
     fig.update_layout(yaxis_range=[-6, PITCH_W + 6])
