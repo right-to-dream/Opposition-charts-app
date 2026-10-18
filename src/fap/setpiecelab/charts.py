@@ -79,7 +79,10 @@ def _hover_row(sd: SetPieceData, r: pd.Series) -> str:
     extra = f"<br>extra points: {', '.join(f'({x:.0f}, {y:.0f})' for x, y in r['points'][1:])}" if r["extra_points"] else ""
     note = f"<br>note: {r['notes']}" if r["notes"] else ""
     dur = f" · clip {r['duration']:.1f}s" if pd.notna(r["duration"]) else ""
-    return (f"<b>{r['instance']}</b>{dur}<br>landing x {r['x']:.0f}, y {r['y']:.0f} m<br>{q}{extra}{note}")
+    sb = (f"<br>second ball x {r['sb_x']:.0f}, y {r['sb_y']:.0f} m ({A.second_ball_zone(r['sb_x'], r['sb_y']).lower()})"
+          if "sb_x" in r and pd.notna(r["sb_x"]) else "")
+    side = f" · from the {r['landing_side'].lower()}" if r.get("landing_side") else ""
+    return (f"<b>{r['instance']}</b>{dur}<br>landing x {r['x']:.0f}, y {r['y']:.0f} m{side}{sb}<br>{q}{extra}{note}")
 
 
 def landing_map(sd: SetPieceData, row: str, *, color_by: str | None = None, theme: Theme = DARK) -> go.Figure:
@@ -113,8 +116,55 @@ def landing_map(sd: SetPieceData, row: str, *, color_by: str | None = None, them
                                  hovertext=[_hover_row(sd, r) for _, r in d.iterrows()], hoverinfo="text",
                                  marker=dict(size=14, color=th.muted if name == "not coded" else col,
                                              line=dict(color=th.bg, width=1))))
-    if pts["x"].min() > PITCH_L / 2 - 5:                      # everything in the attacking half → zoom in
+    sb = pts[pts["sb_x"].notna()] if "sb_x" in pts else pts.iloc[0:0]
+    if len(sb):                                              # second ball: where the loose ball was won
+        xs, ys = [], []
+        for _, r in sb.iterrows():
+            xs += [r["x"], r["sb_x"], None]
+            ys += [r["y"], r["sb_y"], None]
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color=th.carry, width=1.2, dash="dot"),
+                                 hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(x=sb["sb_x"], y=sb["sb_y"], mode="markers", name=f"Second ball ({len(sb)})",
+                                 hovertext=[_hover_row(sd, r) for _, r in sb.iterrows()], hoverinfo="text",
+                                 marker=dict(size=12, symbol="diamond", color=th.carry, line=dict(color=th.bg, width=1))))
+    allx = pd.concat([pts["x"], sb["sb_x"]]) if len(sb) else pts["x"]
+    if allx.min() > PITCH_L / 2 - 5:                         # everything in the attacking half → zoom in
         fig.update_xaxes(range=[PITCH_L / 2 - 3, PITCH_L + 3])
+    return fig
+
+
+def category_compare(sd: SetPieceData, cat: str, *, theme: Theme = DARK, max_quals: int = 6) -> go.Figure:
+    """Attacking vs defending of one category: every coded qualifier as % of that phase's coded instances."""
+    th = theme
+    pc = A.phase_compare(sd, cat)
+    plural = A.CATEGORY_PLURAL.get(cat, cat)
+    if pc.empty:
+        return _base(go.Figure(), th, f"{sd.team} — {plural}", "nothing coded")
+    quals = [q for q in sd.qualifiers if q in set(pc["qualifier"])][:max_quals]
+    n = len(quals)
+    cols = min(3, n)
+    rows = int(np.ceil(n / cols))
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=quals, horizontal_spacing=0.16, vertical_spacing=0.2)
+    for i, q in enumerate(quals):
+        r, c = divmod(i, cols)
+        g = pc[pc["qualifier"] == q]
+        order = g.groupby("value")["count"].sum().sort_values().index.tolist()
+        for ph, col in (("Attacking", th.team), ("Defending", th.opp)):
+            d = g[g["phase"] == ph].set_index("value").reindex(order)
+            fig.add_trace(go.Bar(y=order, x=d["share"].fillna(0), orientation="h", name=f"{sd.team} {ph.lower()}",
+                                 marker_color=col, showlegend=i == 0, legendgroup=ph,
+                                 text=[f"{int(k)}" if k == k and k else "" for k in d["count"]], textposition="outside",
+                                 cliponaxis=False,
+                                 hovertext=[f"<b>{q}: {v}</b><br>{ph}: {int(k) if k == k else 0} of {int(o) if o == o else 0}"
+                                            f" ({sh:.0f}%)" if sh == sh else f"<b>{q}: {v}</b><br>{ph}: 0"
+                                            for v, k, o, sh in zip(order, d["count"], d["of"], d["share"])],
+                                 hoverinfo="text"), r + 1, c + 1)
+        fig.update_xaxes(range=[0, 125], visible=False, row=r + 1, col=c + 1)
+    _base(fig, th, f"{sd.team} — {plural}: taking vs defending",
+          "% of each phase's coded instances · label = count · hover for details", 150 + 230 * rows)
+    fig.update_layout(barmode="group", bargap=0.25, legend=dict(orientation="h", y=1.08, x=1, xanchor="right"))
+    for a in fig.layout.annotations:
+        a.font = dict(color=th.muted, size=12)
     return fig
 
 
@@ -183,4 +233,36 @@ def outcome_by(sd: SetPieceData, row: str, by: str, *, theme: Theme = DARK) -> g
                              hoverinfo="text"))
     _base(fig, th, f"{row} — outcome by {by}", "stacked: every coded instance of each value", 360)
     fig.update_layout(barmode="stack")
+    return fig
+
+
+def contact_map(sd: SetPieceData, row: str, which: int, *, theme: Theme = DARK) -> go.Figure:
+    """1st-contact (landing point) or 2nd-contact (second-ball point) map, coloured by that contact's outcome;
+    circle = the file's team won the contact, ✕ = the opponent won it."""
+    th = theme
+    outc, won = A.contact_columns(sd, which)
+    pts = A.contact_points(sd, row, which)
+    g = sd.of(row=row)
+    name = "1st contact" if which == 1 else "2nd contact (second ball)"
+    where = "where the ball lands" if which == 1 else "where the second ball is played"
+    fig = _pitch(th, f"{row} — {name} outcome", f"{len(pts)} of {len(g)} located · {where} · colour = "
+                 f"{outc or 'outcome'} · ● {sd.team} won it · ✕ opponent won it · hover any point", height=540)
+    if pts.empty:
+        fig.add_annotation(x=PITCH_L / 2, y=PITCH_W / 2, text=f"No {name} locations coded for this set piece",
+                           showarrow=False, font=dict(color=th.muted, size=15))
+        return fig
+    vals = pts[outc].replace("", "Not coded") if outc else pd.Series("Not coded", index=pts.index)
+    palette = _palette(th)
+    for i, v in enumerate(vals.value_counts().index):
+        d = pts[vals == v]
+        col = th.muted if v == "Not coded" else A.OUTCOME_COLORS.get(v.lower(), palette[i % len(palette)])
+        yn = d[won].map(is_yes) if won else pd.Series(None, index=d.index)
+        sym = ["circle" if y is True else "x" if y is False else "circle-open" for y in yn]
+        fig.add_trace(go.Scatter(x=d["cx"], y=d["cy"], mode="markers+text", name=f"{v} ({len(d)})",
+                                 text=[str(n) for n in d["n"]], textposition="top center",
+                                 textfont=dict(size=9, color=th.muted),
+                                 hovertext=[_hover_row(sd, r) for _, r in d.iterrows()], hoverinfo="text",
+                                 marker=dict(size=15, color=col, symbol=sym, line=dict(color=th.bg, width=1))))
+    if pts["cx"].min() > PITCH_L / 2 - 5:
+        fig.update_xaxes(range=[PITCH_L / 2 - 3, PITCH_L + 3])
     return fig

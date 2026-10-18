@@ -83,8 +83,10 @@ def _clean_qual(v: Any) -> str:
         return "Successful"
     if k in ("unsuccessfull", "unsuccessful"):
         return "Unsuccessful"
-    if k == "cleareance":
+    if k in ("cleareance", "clearence"):
         return "Clearance"
+    if k in YES or k in NO:
+        return s[:1].upper() + s[1:].lower()      # yes / YES → Yes
     return s
 
 
@@ -131,6 +133,49 @@ def read_table(src: Any, name: str = "") -> pd.DataFrame:
     return pd.read_excel(io.BytesIO(data))
 
 
+_COORD = re.compile(r"^([xy])\s*[_\-\s]\s*(.+)$")
+_SECOND = ("second ball", "2nd ball", "second", "2nd")
+
+# outcome words, most dangerous first — the set piece's overall Result is the most dangerous one coded
+RESULT_RANK = ("goal", "shot", "threat", "cross", "recycle", "foul won", "corner won", "gk punch", "gk claim",
+               "clearance", "foul", "out")
+RESULT_COL = "Result"
+
+
+def _coord_cols(columns) -> tuple[dict, dict]:
+    """``x_<kind>`` / ``x-<kind>`` / ``X <kind>`` columns → {kind: column} for x and y."""
+    xs, ys = {}, {}
+    for c in columns:
+        m = _COORD.match(_key(c))
+        if m:
+            (xs if m.group(1) == "x" else ys)[m.group(2).strip()] = c
+    return xs, ys
+
+
+def _is_second(kind: str) -> bool:
+    return any(w in kind for w in _SECOND)
+
+
+def _side_of(kind: str) -> str:
+    return "Right" if re.search(r"\bright\b", kind) else "Left" if re.search(r"\bleft\b", kind) else ""
+
+
+def _split(v: str) -> list[str]:
+    return [p.strip() for p in re.split(r"[,;/]", str(v)) if p.strip()]
+
+
+def _result_of(values: list[str]) -> str:
+    """Most dangerous outcome among the coded ones ('Threat, Shot' → Shot)."""
+    best, best_rank = "", len(RESULT_RANK) + 1
+    for v in values:
+        for part in _split(v):
+            k = _clean_qual(part).lower()
+            rank = RESULT_RANK.index(k) if k in RESULT_RANK else len(RESULT_RANK)
+            if rank < best_rank:
+                best, best_rank = _clean_qual(part), rank
+    return best.title() if best and best.islower() else best
+
+
 def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
     raw = read_table(src, name)
     cols = {_key(c): c for c in raw.columns}
@@ -138,10 +183,9 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
         raise ValueError("Expected a coding-matrix export with a 'Row' column (the set-piece type).")
     notes: list[str] = []
     row = raw[cols["row"]].astype(str).str.strip()
-    xcols = {_key(c)[2:]: c for c in raw.columns if _key(c).startswith("x_")}
-    ycols = {_key(c)[2:]: c for c in raw.columns if _key(c).startswith("y_")}
-    qual_cols = [c for c in raw.columns if _key(c) not in _META and not _key(c).startswith(("x_", "y_"))
-                 and raw[c].notna().any()]
+    xcols, ycols = _coord_cols(raw.columns)
+    coord_set = set(xcols.values()) | set(ycols.values())
+    qual_cols = [c for c in raw.columns if _key(c) not in _META and c not in coord_set and raw[c].notna().any()]
     df = pd.DataFrame({
         "row": row,
         "instance": raw[cols["original instance"]].astype(str) if "original instance" in cols else row + ": " + (raw.index + 1).astype(str),
@@ -156,28 +200,66 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
     for c in qual_cols:
         df[str(c).strip()] = raw[c].map(_clean_qual)
     quals = [str(c).strip() for c in qual_cols]
-    binary = [q for q in quals if set(df[q].str.lower().unique()) - {""} <= (YES | NO) and (df[q] != "").any()]
-    # landing points: x_<row> / y_<row> of the row's own type
-    def coord_key(k: str) -> str | None:
-        """x_/y_ suffix for a row type: exact name, else a suffix contained in the type ('gk' in 'long gk')
-        or the type contained in the suffix; the longest match wins."""
-        if k in xcols and k in ycols:
-            return k
-        cands = [s for s in xcols if s in ycols and (re.search(rf"\b{re.escape(s)}\b", k) or k in s)]
-        return max(cands, key=len) if cands else None
 
-    pts = []
+    # overall result: from every "... Outcome" column (1st contact Outcome, 2nd contact Outcome, Outcome)
+    out_cols = [q for q in quals if "outcome" in q.lower() or q.lower() == "result"]
+    if out_cols:
+        df[RESULT_COL] = [_result_of([r[q] for q in out_cols]) for _, r in df[out_cols].iterrows()]
+        if out_cols == ["Outcome"]:                    # a single Outcome column → it IS the result
+            df["Outcome"] = df[RESULT_COL]             # kept as an alias (older reports / designs use it)
+            quals = [q for q in quals if q != "Outcome"]
+        quals = [RESULT_COL] + quals
+        notes.append(f"Result = the most dangerous outcome coded in: {', '.join(out_cols)}.")
+    eff = next((q for q in quals if q.lower() == "efficiency"), None)
+    if eff:                                            # penalties: Efficiency Successful = scored
+        pen = df["category"].eq("Penalty") & df[eff].str.lower().str.contains("success") \
+            & ~df[eff].str.lower().str.contains("unsuccess")
+        if RESULT_COL not in df:
+            df[RESULT_COL] = ""
+            quals = [RESULT_COL] + quals
+        df.loc[pen & df[RESULT_COL].eq(""), RESULT_COL] = "Goal"
+    binary = [q for q in quals if set(df[q].str.lower().unique()) - {""} <= (YES | NO) and (df[q] != "").any()]
+
+    # coordinates: landing point of the row's own type (+ side columns), second-ball point
+    land_kinds = [k for k in xcols if k in ycols and not _is_second(k)]
+    sb_kind = next((k for k in xcols if k in ycols and _is_second(k)), None)
+
+    def kinds_for(rk: str) -> list[str]:
+        """Coordinate kinds of a row type: exact, a kind contained in the type ('gk' in 'long gk'), or the type
+        contained in the kind ('offensive corner' in 'offensive corner right'); longest first."""
+        out = []
+        for k in land_kinds:
+            base = re.sub(r"\b(right|left)\b", "", k).strip()
+            if k == rk or base == rk or re.search(rf"\b{re.escape(base)}\b", rk) or rk in k:
+                out.append(k)
+        return sorted(out, key=len, reverse=True)
+
+    pts, sides, sbx, sby = [], [], [], []
     for i, r in enumerate(row):
-        ck = coord_key(_key(r))
-        xc, yc = (xcols.get(ck), ycols.get(ck)) if ck else (None, None)
-        pts.append(parse_points(raw.at[raw.index[i], xc], raw.at[raw.index[i], yc]) if xc is not None and yc is not None else [])
+        ri = raw.index[i]
+        p, side = [], ""
+        for k in kinds_for(_key(r)):
+            got = parse_points(raw.at[ri, xcols[k]], raw.at[ri, ycols[k]])
+            if got:
+                p, side = got, _side_of(k)
+                break
+        pts.append(p)
+        sides.append(side)
+        sb = parse_points(raw.at[ri, xcols[sb_kind]], raw.at[ri, ycols[sb_kind]]) if sb_kind else []
+        sbx.append(sb[0][0] if sb else np.nan)
+        sby.append(sb[0][1] if sb else np.nan)
     df["points"] = pts
     df["x"] = [p[0][0] if p else np.nan for p in pts]
     df["y"] = [p[0][1] if p else np.nan for p in pts]
     df["extra_points"] = [len(p) - 1 if p else 0 for p in pts]
-    missing_xy = sorted({r for r in df["row"].unique() if coord_key(_key(r)) is None})
+    df["landing_side"] = sides
+    df["sb_x"], df["sb_y"] = sbx, sby
+    missing_xy = sorted({r for r in df["row"].unique() if not kinds_for(_key(r))})
     if missing_xy:
-        notes.append("No coordinate columns for: " + ", ".join(missing_xy))
+        notes.append("No landing-point columns for: " + ", ".join(missing_xy))
+    if sb_kind:
+        notes.append(f"Second-ball location from '{xcols[sb_kind]}' / '{ycols[sb_kind]}' "
+                     f"({int(df['sb_x'].notna().sum())} coded).")
     multi = int((df["extra_points"] > 0).sum())
     if multi:
         notes.append(f"{multi} set piece(s) have more than one point in the cell — first = landing point, "

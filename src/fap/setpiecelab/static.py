@@ -117,6 +117,9 @@ def landing(sd: SetPieceData, row: str, *, color_by: str | None = None, theme: T
     if flip:                                        # their own goal: show it at the top like the others
         pts["x"], pts["y"] = PITCH_L - pts["x"], PITCH_W - pts["y"]
         pts["points"] = pts["points"].map(lambda p: [(PITCH_L - a, PITCH_W - b) for a, b in p])
+        if "sb_x" in pts:
+            pts["sb_x"], pts["sb_y"] = PITCH_L - pts["sb_x"], PITCH_W - pts["sb_y"]
+    sbp = pts[pts["sb_x"].notna()] if "sb_x" in pts else pts.iloc[0:0]
     half = bool(len(pts) == 0 or pts["x"].min() >= PITCH_L / 2 - 2)
     with _rc(th):
         pitch = VerticalPitch(pitch_type="custom", pitch_length=PITCH_L, pitch_width=PITCH_W, half=half,
@@ -131,7 +134,8 @@ def landing(sd: SetPieceData, row: str, *, color_by: str | None = None, theme: T
                       + ("   ·   shown towards the top goal" if flip else ""))
         ax = fig.add_axes([0.03, 0.1, 0.94, 0.76])
         pitch.draw(ax=ax)
-        if half and len(pts) and bool(pts["x"].min() >= 72):          # zoom onto the final third
+        lo_x = min(pts["x"].min(), sbp["sb_x"].min()) if len(sbp) else (pts["x"].min() if len(pts) else 0)
+        if half and len(pts) and bool(lo_x >= 72):                     # zoom onto the final third
             ax.set_ylim(68, PITCH_L + 3)
         if pts.empty:
             ax.text(PITCH_W / 2 if half else PITCH_L / 2, (PITCH_L * 0.75) if half else PITCH_W / 2,
@@ -146,7 +150,8 @@ def landing(sd: SetPieceData, row: str, *, color_by: str | None = None, theme: T
             vals = [v for v in pts[color_by].value_counts().index if v] + (["" ] if (pts[color_by] == "").any() else [])
             groups = []
             for i, v in enumerate(vals):
-                col = OUT_COLORS.get(v.lower(), palette[i % len(palette)]) if color_by.lower() == "outcome" else palette[i % len(palette)]
+                col = (OUT_COLORS.get(v.lower(), palette[i % len(palette)]) if color_by.lower() in ("outcome", "result")
+                       else palette[i % len(palette)])
                 groups.append((v or "not coded", pts[pts[color_by] == v], th.muted if not v else col))
         else:
             groups = [("All", pts, th.team)]
@@ -156,6 +161,13 @@ def landing(sd: SetPieceData, row: str, *, color_by: str | None = None, theme: T
             for _, r in d.iterrows():
                 pitch.annotate(str(r["n"]), (r["x"], r["y"]), ax=ax, ha="center", va="center", fontsize=7.5,
                                fontweight="bold", color="#ffffff" if col not in (th.accent,) else "#111111", zorder=4)
+        if len(sbp):                                   # second ball: where the loose ball was won
+            for _, r in sbp.iterrows():
+                pitch.plot([r["x"], r["sb_x"]], [r["y"], r["sb_y"]], ax=ax, color=th.carry, lw=1.1, ls=(0, (2, 2)),
+                           zorder=2.5)
+            pitch.scatter(sbp["sb_x"], sbp["sb_y"], ax=ax, s=150, marker="D", color=th.carry, edgecolors=th.bg,
+                          linewidth=1, zorder=3.2, label=f"Second ball ({len(sbp)})")
+            groups = groups + [("Second ball", sbp, th.carry)]
         if len(pts) >= 3:
             mx, my = pts["x"].mean(), pts["y"].mean()
             pitch.scatter([mx], [my], ax=ax, s=1400, facecolor=to_rgba(th.accent, 0.08), edgecolor=th.accent,
@@ -307,4 +319,111 @@ def report_card(sd: SetPieceData, row: str, *, theme: Theme = DARK):
         ax2 = fig.add_axes([0.5, top - hb / H, 0.49, hb / H])
         ax2.imshow(ib)
         ax2.axis("off")
+    return fig
+
+
+def category_compare(sd: SetPieceData, cat: str, *, theme: Theme = DARK, max_quals: int = 6):
+    """Attacking vs defending of one category, every qualifier as % of that phase — with the key findings."""
+    import re as _re
+    th = theme
+    pc = A.phase_compare(sd, cat)
+    plural = A.CATEGORY_PLURAL.get(cat, cat)
+    quals = [q for q in sd.qualifiers if not pc.empty and q in set(pc["qualifier"])][:max_quals]
+    ins = [_re.sub(r"\*\*", "", t) for t in A.category_insights(sd, cat)]
+    lines = [w for t in ins for w in textwrap.wrap(t, 150)]
+    cols = min(3, max(1, len(quals)))
+    rows_ = int(np.ceil(len(quals) / cols)) if quals else 0
+    heights = []
+    for r in range(rows_):
+        grp = quals[r * cols:(r + 1) * cols]
+        heights.append(max(pc[pc["qualifier"] == q]["value"].nunique() for q in grp))
+    head = 1.3 + 0.24 * len(lines)
+    H = head + sum(0.8 + 0.42 * h for h in heights) + 0.3
+    with _rc(th):
+        fig = _figure(th, (16, H), f"{sd.team} — {plural}: taking vs defending",
+                      f"blue = {sd.team} taking {plural.lower()}   ·   red = {sd.team} defending them   ·   "
+                      "bars = % of that phase's coded instances, label = count")
+        for j, line in enumerate(lines):
+            fig.text(0.03, 1 - (1.05 + 0.24 * j) / H, line, ha="left", va="top", fontsize=10, color=th.text)
+        top = 1 - head / H
+        for r in range(rows_):
+            hgt = 0.42 * heights[r] / H
+            for c in range(cols):
+                i = r * cols + c
+                if i >= len(quals):
+                    continue
+                q = quals[i]
+                g = pc[pc["qualifier"] == q]
+                order = g.groupby("value")["count"].sum().sort_values().index.tolist()
+                ax = fig.add_axes([0.1 + c * 0.315, top - hgt - 0.45 / H, 0.2, hgt])
+                yy = np.arange(len(order))
+                for k, (ph, col, off) in enumerate((("Attacking", th.team, 0.2), ("Defending", th.opp, -0.2))):
+                    d = g[g["phase"] == ph].set_index("value").reindex(order)
+                    sh, cn = d["share"].fillna(0).to_numpy(), d["count"].fillna(0).to_numpy()
+                    ax.barh(yy + off, sh, height=0.38, color=col)
+                    for yi, v, n_ in zip(yy + off, sh, cn):
+                        if n_:
+                            ax.text(v + 2, yi, f"{int(n_)}", va="center", fontsize=8, color=th.text)
+                ax.set_yticks(yy, order, fontsize=9, color=th.text)
+                ax.set_xlim(0, 125)
+                ax.set_ylim(-0.7, max(len(order), 2) - 0.3)
+                ax.set_xticks([])
+                _style_ax(ax, th)
+                ax.spines["bottom"].set_visible(False)
+                ax.set_title(q.upper(), loc="left", fontsize=9, color=th.muted, fontweight="bold", pad=6)
+            top -= hgt + 0.8 / H
+    return fig
+
+
+def contact_map(sd: SetPieceData, row: str, which: int, *, theme: Theme = DARK):
+    """Static 1st-contact / 2nd-contact outcome map (● team won the contact, ✕ opponent won it)."""
+    th = theme
+    outc, won = A.contact_columns(sd, which)
+    pts = A.contact_points(sd, row, which).copy()
+    g = sd.of(row=row)
+    name = "1st contact" if which == 1 else "2nd contact (second ball)"
+    flip = bool(len(pts)) and bool(pts["cx"].mean() < PITCH_L / 2)
+    if flip:
+        pts["cx"], pts["cy"] = PITCH_L - pts["cx"], PITCH_W - pts["cy"]
+    with _rc(th):
+        pitch = VerticalPitch(pitch_type="custom", pitch_length=PITCH_L, pitch_width=PITCH_W, half=True,
+                              pitch_color=th.pitch, line_color=th.line, linewidth=1.2, goal_type="box",
+                              corner_arcs=True, pad_top=2, pad_bottom=2, pad_left=2, pad_right=2)
+        fig = _figure(th, (8.6, 8.6), f"{sd.team} · {row} — {name} outcome",
+                      f"{len(pts)} of {len(g)} located   ·   colour = {outc or 'outcome'}   ·   "
+                      f"● {sd.team} won it   ✕ opponent won it")
+        ax = fig.add_axes([0.03, 0.12, 0.94, 0.74])
+        pitch.draw(ax=ax)
+        if len(pts) and bool(pts["cx"].min() >= 72):
+            ax.set_ylim(68, PITCH_L + 3)
+        if pts.empty:
+            ax.text(PITCH_W / 2, PITCH_L * 0.75, f"No {name} locations coded", ha="center", va="center",
+                    color=th.muted, fontsize=13)
+            return fig
+        vals = pts[outc].replace("", "Not coded") if outc else pd.Series("Not coded", index=pts.index)
+        palette = [th.team, th.accent, th.good, th.carry, th.opp, th.bad]
+        from matplotlib.lines import Line2D
+        handles = []
+        for i, v in enumerate(vals.value_counts().index):
+            d = pts[vals == v]
+            col = th.muted if v == "Not coded" else A.OUTCOME_COLORS.get(v.lower(), palette[i % len(palette)])
+            yn = d[won].map(is_yes) if won else pd.Series(None, index=d.index)
+            for marker, mask in (("o", yn.map(lambda z: z is True)), ("X", yn.map(lambda z: z is False)),
+                                 ("o", yn.map(lambda z: z is None))):
+                dd = d[mask.astype(bool)]
+                if dd.empty:
+                    continue
+                hollow = marker == "o" and mask is not None and dd.index.isin(d[yn.map(lambda z: z is None)].index).all() \
+                    and not dd.index.isin(d[yn.map(lambda z: z is True)].index).any()
+                pitch.scatter(dd["cx"], dd["cy"], ax=ax, s=260, marker=marker,
+                              color="none" if hollow else col, edgecolors=col if hollow else th.bg,
+                              linewidth=2 if hollow else 1.2, zorder=3)
+                for _, r in dd.iterrows():
+                    pitch.annotate(str(r["n"]), (r["cx"] + 1.6, r["cy"]), ax=ax, ha="center", va="center", fontsize=7.5,
+                                   color=th.muted, zorder=4)
+            handles.append(Line2D([0], [0], marker="o", lw=0, markersize=9, color=col, label=f"{v} ({len(d)})"))
+        handles += [Line2D([0], [0], marker="o", lw=0, markersize=9, color=th.text, label=f"{sd.team} won"),
+                    Line2D([0], [0], marker="X", lw=0, markersize=9, color=th.text, label="Opponent won")]
+        ax.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.13), ncol=4, frameon=False,
+                  fontsize=8.5, labelcolor=th.text, handletextpad=0.3, columnspacing=1.0)
     return fig

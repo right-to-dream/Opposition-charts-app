@@ -47,7 +47,8 @@ def _static_png(sig: str, chart: str, args: tuple, theme_name: str, _sd) -> byte
     from fap.matchlab.charts import THEMES
     from fap.setpiecelab import static as S
     fn = {"overview": S.overview, "contests": S.contests, "landing": S.landing, "qualifiers": S.qualifiers,
-          "cross": S.cross, "outcome_by": S.outcome_by, "card": S.report_card}[chart]
+          "cross": S.cross, "outcome_by": S.outcome_by, "card": S.report_card,
+          "category": S.category_compare, "contact": S.contact_map}[chart]
     kw = dict(args)
     pos = kw.pop("_pos", ())
     return S.png(fn(_sd, *pos, theme=THEMES[theme_name], **kw), 300)
@@ -167,7 +168,10 @@ class SetPieceLabPage(Page):
                 sd._spl_sig = sig
             except Exception as exc:
                 C.render_alert(f"Could not read this file: {exc}", "danger")
-        tabs = st.tabs(["Overview", "Explorer", "Designer", "Library", "Data"])
+        tabs = st.tabs(["Overview", "By type", "Explorer", "Designer", "Library", "Data"])
+        with tabs[1]:
+            self._by_type(sd) if sd else self._empty()
+        tabs = [tabs[0], *tabs[2:]]
         with tabs[0]:
             self._overview(sd) if sd else self._empty()
         with tabs[1]:
@@ -275,6 +279,60 @@ class SetPieceLabPage(Page):
                                mime="application/zip", key="spl_cards_dl", icon=":material/download:")
 
     # ---- explorer -----------------------------------------------------------------
+    def _by_type(self, sd) -> None:
+        """Corners / free kicks / throw-ins …: taking vs defending side by side, findings, maps."""
+        from fap.setpiecelab import analytics as A
+        from fap.setpiecelab import charts as CH
+        tn, th = self._theme()
+        sig = sd._spl_sig
+        cats = A.categories(sd)
+        if not cats:
+            st.info("No set-piece types recognised.")
+            return
+        sub = st.tabs([f"{A.CATEGORY_PLURAL.get(c, c)} ({len(sd.of(category=c))})" for c in cats])
+        for cat, tab in zip(cats, sub):
+            with tab:
+                tb = A.category_table(sd, cat)
+                cards = []
+                for _, r in tb.iterrows():
+                    att = r["Phase"] == "Attacking"
+                    who = f"{sd.team} {'taking' if att else 'defending'}"
+                    c1 = (f"{int(r['1st contact won'])}/{int(r['1st contact decided'])}"
+                          if r.get("1st contact decided", 0) else "–")
+                    c2 = (f"{int(r['2nd ball won'])}/{int(r['2nd ball decided'])}" if r.get("2nd ball decided", 0) else "–")
+                    dang = int(r.get("Dangerous (goal/shot/threat)", 0) or 0)
+                    cards += [C.metric_card_html(who, str(int(r["Count"])), hint=r["Coded as"]),
+                              C.metric_card_html("1st contact won", c1, hint=f"{who.split()[-1]} · {sd.team} won it"),
+                              C.metric_card_html("2nd ball won", c2, hint=f"{who.split()[-1]} · {sd.team} won it"),
+                              C.metric_card_html("Danger " + ("created" if att else "conceded"), str(dang),
+                                                 hint=f"{int(r.get('Shots', 0) or 0)} shot(s) · {int(r.get('Goals', 0) or 0)} goal(s)")]
+                for k in range(0, len(cards), 4):
+                    C.render_metric_row(cards[k:k + 4])
+                st.markdown("##### Key findings")
+                for line in A.category_insights(sd, cat):
+                    st.markdown(f"- {line}")
+                _show(CH.category_compare(sd, cat, theme=th), f"cat_{cat}")
+                _png_button("Download PNG (comparison + findings)",
+                            lambda c=cat: _static_png(sig, "category", (("_pos", (c,)),), tn, sd),
+                            f"{sd.team}_{A.CATEGORY_PLURAL.get(cat, cat)}_taking_vs_defending", f"cat_{cat}")
+                for which, title in ((1, "1st contact outcome — where the ball lands"),
+                                     (2, "2nd contact outcome — where the second ball is played")):
+                    for r in A.contact_rows(sd, which, cat):
+                        st.markdown(f"##### {r} — {title}")
+                        _show(CH.contact_map(sd, r, which, theme=th), f"contact{which}_{cat}_{r}")
+                        _png_button("Download PNG", lambda r=r, w=which: _static_png(sig, "contact", (("_pos", (r, w)),), tn, sd),
+                                    f"{sd.team}_{r}_contact{which}_outcome", f"contact{which}_{cat}_{r}")
+                rows = [r for r in sd.rows if sd.of(row=r)["category"].iloc[0] == cat and sd.of(row=r)["x"].notna().any()]
+                for r in rows:
+                    st.markdown(f"##### {r} — landing points & second balls (all results)")
+                    rc = "Result" if "Result" in sd.qualifiers else None
+                    _show(CH.landing_map(sd, r, color_by=rc, theme=th), f"catmap_{cat}_{r}")
+                    _png_button("Download PNG", lambda r=r, rc=rc: _static_png(sig, "landing", (("_pos", (r,)), ("color_by", rc)), tn, sd),
+                                f"{sd.team}_{r}_landing", f"catmap_{cat}_{r}")
+                if not rows:
+                    st.caption("No landing coordinates coded for this type.")
+                st.dataframe(tb.set_index("Phase").T.astype(str), use_container_width=True)
+
     def _explorer(self, sd) -> None:
         from fap.setpiecelab import analytics as A
         from fap.setpiecelab import charts as CH
@@ -285,7 +343,7 @@ class SetPieceLabPage(Page):
         row = c[0].selectbox("Set piece", sd.rows, key="spl_row", format_func=lambda r: f"{r}  ({len(sd.of(row=r))})")
         quals = [q for q in sd.qualifiers if (sd.of(row=row)[q] != "").any()]
         color_by = c[1].selectbox("Colour landing points by", ["—"] + quals, key="spl_colorby",
-                                  index=(1 + quals.index("Outcome")) if "Outcome" in quals else 0)
+                                  index=(1 + quals.index("Result")) if "Result" in quals else 0)
         cb = None if color_by == "—" else color_by
         with c[2]:
             st.write("")
@@ -297,6 +355,11 @@ class SetPieceLabPage(Page):
         _show(CH.landing_map(sd, row, color_by=cb, theme=th), "map")
         _png_button("Download PNG", lambda: _static_png(sig, "landing", (("_pos", (row,)), ("color_by", cb)), tn, sd),
                     f"{sd.team}_{row}_landing", "x_map")
+        for which, title in ((1, "1st contact outcome"), (2, "2nd contact outcome (second ball)")):
+            if len(A.contact_points(sd, row, which)):
+                _show(CH.contact_map(sd, row, which, theme=th), f"x_contact{which}")
+                _png_button("Download PNG", lambda w=which: _static_png(sig, "contact", (("_pos", (row, w)),), tn, sd),
+                            f"{sd.team}_{row}_contact{which}_outcome", f"x_contact{which}")
         _show(CH.qualifier_grid(sd, row, theme=th), "grid")
         _png_button("Download PNG", lambda: _static_png(sig, "qualifiers", (("_pos", (row,)),), tn, sd),
                     f"{sd.team}_{row}_details", "x_grid")

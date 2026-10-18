@@ -128,3 +128,53 @@ def test_exports_render(sd):
 def test_bad_file():
     with pytest.raises(ValueError):
         load_setpieces(pd.DataFrame({"a": [1]}), "x.csv")
+
+
+def test_split_outcome_columns_side_coords_and_second_ball():
+    """Pharco-style export: '1st contact Outcome' / '2nd contact Outcome', corner coords split by side,
+    a second-ball location and 'X-GK' (hyphen) coordinates."""
+    from fap.setpiecelab.loader import RESULT_COL
+    raw = pd.DataFrame({
+        "Timeline": ["Pharco Set pieces"] * 5,
+        "Row": ["Offensive Corner", "Offensive Corner", "Defensive Corner", "Long GK", "Penalty"],
+        "1st contact": ["No", "No", "Yes", "No", None],
+        "1st contact Outcome": ["GK Punch", "Cleareance", "Cleareance", None, None],
+        "2nd ball": [None, "yes", "Yes", "Yes", None],
+        "2nd contact Outcome": [None, "Threat, Shot", "Cleareance", None, None],
+        "Efficiency": [None, None, None, None, "Successful"],
+        "X-GK": [None, None, None, 60, None], "Y-GK": [None, None, None, 46, None],
+        "X_Second ball": [96, None, None, None, None], "Y_Second ball": [30, None, None, None, None],
+        "X_offensive corner Right": [103, None, None, None, None], "Y_offensive corner Right": [40, None, None, None, None],
+        "X_offensive corner left": [None, 99, None, None, None], "Y_offensive corner left": [None, 38, None, None, None],
+    })
+    sd = load_setpieces(raw, "p.csv")
+    df = sd.df
+    assert sd.team == "Pharco" and sd.qualifiers[0] == RESULT_COL and "X-GK" not in sd.qualifiers
+    assert list(df[RESULT_COL]) == ["GK Punch", "Shot", "Clearance", "", "Goal"]     # most dangerous wins
+    assert (df.at[0, "x"], df.at[0, "landing_side"], df.at[0, "sb_x"]) == (103.0, "Right", 96.0)
+    assert (df.at[1, "x"], df.at[1, "landing_side"]) == (99.0, "Left")
+    assert (df.at[3, "x"], df.at[3, "y"]) == (60.0, 46.0)
+    assert df.at[1, "2nd ball"] == "Yes"
+    assert A.categories(sd) == ["Corner", "Goal kick", "Penalty"]
+    t = A.category_table(sd, "Corner").set_index("Phase")
+    assert t.loc["Attacking", "Dangerous (goal/shot/threat)"] == 1 and t.loc["Defending", "1st contact won"] == 1
+    assert any("Second balls" in s for s in A.category_insights(sd, "Corner"))
+    from fap.setpiecelab import static as S
+    assert S.png(S.category_compare(sd, "Corner"), 30)[1:4] == b"PNG"
+    assert S.png(S.landing(sd, "Offensive Corner", color_by=RESULT_COL), 30)[1:4] == b"PNG"
+    CH.category_compare(sd, "Corner")
+
+
+def test_contact_maps():
+    from fap.setpiecelab import static as S
+    raw = pd.DataFrame({"Timeline": ["P set pieces"] * 2, "Row": ["Offensive Corner"] * 2,
+                        "1st contact": ["No", "Yes"], "1st contact Outcome": ["Clearance", "Threat"],
+                        "2nd ball": ["Yes", None], "2nd contact Outcome": ["Shot", None],
+                        "X_offensive corner Right": [100, 99], "Y_offensive corner Right": [30, 40],
+                        "X_Second ball": [90, None], "Y_Second ball": [34, None]})
+    sd = load_setpieces(raw, "p.csv")
+    assert A.contact_columns(sd, 1) == ("1st contact Outcome", "1st contact")
+    assert len(A.contact_points(sd, "Offensive Corner", 1)) == 2 and len(A.contact_points(sd, "Offensive Corner", 2)) == 1
+    for w in (1, 2):
+        CH.contact_map(sd, "Offensive Corner", w)
+        assert S.png(S.contact_map(sd, "Offensive Corner", w), 30)[1:4] == b"PNG"
