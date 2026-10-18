@@ -87,7 +87,8 @@ def _clean_qual(v: Any) -> str:
         return "Clearance"
     if k in YES or k in NO:
         return s[:1].upper() + s[1:].lower()      # yes / YES → Yes
-    return s
+    # one spelling per value: "Penalty area" / "penalty Area" → "Penalty Area" (GK stays GK)
+    return " ".join(w if w.isupper() and len(w) > 1 else w[:1].upper() + w[1:].lower() for w in s.split())
 
 
 @dataclass

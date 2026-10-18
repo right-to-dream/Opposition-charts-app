@@ -280,7 +280,8 @@ class SetPieceLabPage(Page):
 
     # ---- explorer -----------------------------------------------------------------
     def _by_type(self, sd) -> None:
-        """Corners / free kicks / throw-ins …: taking vs defending side by side, findings, maps."""
+        """Corners / free kicks / throw-ins …, each split into its coded types (Offensive Corner, Defensive
+        Corner …) with their own cards, findings, charts and maps, plus a taking-vs-defending comparison."""
         from fap.setpiecelab import analytics as A
         from fap.setpiecelab import charts as CH
         tn, th = self._theme()
@@ -292,46 +293,75 @@ class SetPieceLabPage(Page):
         sub = st.tabs([f"{A.CATEGORY_PLURAL.get(c, c)} ({len(sd.of(category=c))})" for c in cats])
         for cat, tab in zip(cats, sub):
             with tab:
-                tb = A.category_table(sd, cat)
-                cards = []
-                for _, r in tb.iterrows():
-                    att = r["Phase"] == "Attacking"
-                    who = f"{sd.team} {'taking' if att else 'defending'}"
-                    c1 = (f"{int(r['1st contact won'])}/{int(r['1st contact decided'])}"
-                          if r.get("1st contact decided", 0) else "–")
-                    c2 = (f"{int(r['2nd ball won'])}/{int(r['2nd ball decided'])}" if r.get("2nd ball decided", 0) else "–")
-                    dang = int(r.get("Dangerous (goal/shot/threat)", 0) or 0)
-                    cards += [C.metric_card_html(who, str(int(r["Count"])), hint=r["Coded as"]),
-                              C.metric_card_html("1st contact won", c1, hint=f"{who.split()[-1]} · {sd.team} won it"),
-                              C.metric_card_html("2nd ball won", c2, hint=f"{who.split()[-1]} · {sd.team} won it"),
-                              C.metric_card_html("Danger " + ("created" if att else "conceded"), str(dang),
-                                                 hint=f"{int(r.get('Shots', 0) or 0)} shot(s) · {int(r.get('Goals', 0) or 0)} goal(s)")]
-                for k in range(0, len(cards), 4):
-                    C.render_metric_row(cards[k:k + 4])
-                st.markdown("##### Key findings")
-                for line in A.category_insights(sd, cat):
-                    st.markdown(f"- {line}")
-                _show(CH.category_compare(sd, cat, theme=th), f"cat_{cat}")
-                _png_button("Download PNG (comparison + findings)",
-                            lambda c=cat: _static_png(sig, "category", (("_pos", (c,)),), tn, sd),
-                            f"{sd.team}_{A.CATEGORY_PLURAL.get(cat, cat)}_taking_vs_defending", f"cat_{cat}")
-                for which, title in ((1, "1st contact outcome — where the ball lands"),
-                                     (2, "2nd contact outcome — where the second ball is played")):
-                    for r in A.contact_rows(sd, which, cat):
-                        st.markdown(f"##### {r} — {title}")
-                        _show(CH.contact_map(sd, r, which, theme=th), f"contact{which}_{cat}_{r}")
-                        _png_button("Download PNG", lambda r=r, w=which: _static_png(sig, "contact", (("_pos", (r, w)),), tn, sd),
-                                    f"{sd.team}_{r}_contact{which}_outcome", f"contact{which}_{cat}_{r}")
-                rows = [r for r in sd.rows if sd.of(row=r)["category"].iloc[0] == cat and sd.of(row=r)["x"].notna().any()]
-                for r in rows:
-                    st.markdown(f"##### {r} — landing points & second balls (all results)")
-                    rc = "Result" if "Result" in sd.qualifiers else None
-                    _show(CH.landing_map(sd, r, color_by=rc, theme=th), f"catmap_{cat}_{r}")
-                    _png_button("Download PNG", lambda r=r, rc=rc: _static_png(sig, "landing", (("_pos", (r,)), ("color_by", rc)), tn, sd),
-                                f"{sd.team}_{r}_landing", f"catmap_{cat}_{r}")
-                if not rows:
-                    st.caption("No landing coordinates coded for this type.")
-                st.dataframe(tb.set_index("Phase").T.astype(str), use_container_width=True)
+                rows = [r for r in sd.rows if sd.of(row=r)["category"].iloc[0] == cat]
+                rows.sort(key=lambda r: (sd.of(row=r)["phase"].iloc[0] != "Attacking", r))
+                both = len({sd.of(row=r)["phase"].iloc[0] for r in rows}) > 1
+                labels = [f"{r} ({len(sd.of(row=r))})" for r in rows] + (["Taking vs defending"] if both else [])
+                inner = st.tabs(labels) if len(labels) > 1 else [st.container()]
+                for r, t in zip(rows, inner):
+                    with t:
+                        self._type_section(sd, r, tn, th, sig)
+                if both:
+                    with inner[-1]:
+                        st.markdown("##### Key findings")
+                        for line in A.category_insights(sd, cat):
+                            st.markdown(f"- {line}")
+                        _show(CH.category_compare(sd, cat, theme=th), f"cat_{cat}")
+                        _png_button("Download PNG (comparison + findings)",
+                                    lambda c=cat: _static_png(sig, "category", (("_pos", (c,)),), tn, sd),
+                                    f"{sd.team}_{A.CATEGORY_PLURAL.get(cat, cat)}_taking_vs_defending", f"cat_{cat}")
+                        st.dataframe(A.category_table(sd, cat).set_index("Phase").T.astype(str), use_container_width=True)
+
+    def _type_section(self, sd, row: str, tn: str, th, sig: str) -> None:
+        """Everything for ONE coded set-piece type (e.g. Offensive Corner)."""
+        from fap.setpiecelab import analytics as A
+        from fap.setpiecelab import charts as CH
+        g = sd.of(row=row)
+        att = g["phase"].iloc[0] == "Attacking"
+        sm = A.summarise(sd, g)
+        k = f"{row}".replace(" ", "_")
+        c1 = f"{sm['1st contact won']}/{sm['1st contact decided']}" if sm.get("1st contact decided") else "–"
+        c2 = f"{sm['2nd ball won']}/{sm['2nd ball decided']}" if sm.get("2nd ball decided") else "–"
+        C.render_metric_row([
+            C.metric_card_html(row, str(sm["Count"]), hint=f"{sd.team} {'taking' if att else 'defending'}"),
+            C.metric_card_html("1st contact won", c1, hint=f"{sd.team} won it"),
+            C.metric_card_html("2nd ball won", c2, hint=f"{sd.team} won it"),
+            C.metric_card_html("Danger " + ("created" if att else "conceded"), str(sm.get("Dangerous (goal/shot/threat)", 0)),
+                               hint=f"{sm.get('Shots', 0)} shot(s) · {sm.get('Goals', 0)} goal(s)"),
+        ])
+        st.markdown("##### Key findings")
+        for line in A.row_insights(sd, row):
+            st.markdown(f"- {line}")
+        st.markdown(f"##### {row} — how it is {'taken' if att else 'defended'}")
+        _show(CH.qualifier_grid(sd, row, theme=th), f"bt_grid_{k}")
+        _png_button("Download PNG", lambda: _static_png(sig, "qualifiers", (("_pos", (row,)),), tn, sd),
+                    f"{sd.team}_{row}_details", f"bt_grid_{k}")
+        area = A._col(sd, "Area")
+        if area and A.result_col(sd) and (g[area] != "").any():
+            st.markdown(f"##### {row} — result by target area")
+            _show(CH.outcome_by(sd, row, area, theme=th), f"bt_ob_{k}")
+            _png_button("Download PNG", lambda: _static_png(sig, "outcome_by", (("_pos", (row, area)),), tn, sd),
+                        f"{sd.team}_{row}_result_by_area", f"bt_ob_{k}")
+        maps = False
+        for which, title in ((1, "1st contact outcome — where the ball lands"),
+                             (2, "2nd contact outcome — where the second ball is played")):
+            if len(A.contact_points(sd, row, which)):
+                maps = True
+                st.markdown(f"##### {row} — {title}")
+                _show(CH.contact_map(sd, row, which, theme=th), f"bt_c{which}_{k}")
+                _png_button("Download PNG", lambda w=which: _static_png(sig, "contact", (("_pos", (row, w)),), tn, sd),
+                            f"{sd.team}_{row}_contact{which}_outcome", f"bt_c{which}_{k}")
+        if g["x"].notna().any():
+            st.markdown(f"##### {row} — landing points & second balls (all results)")
+            rc = A.result_col(sd)
+            _show(CH.landing_map(sd, row, color_by=rc, theme=th), f"bt_map_{k}")
+            _png_button("Download PNG", lambda: _static_png(sig, "landing", (("_pos", (row,)), ("color_by", rc)), tn, sd),
+                        f"{sd.team}_{row}_landing", f"bt_map_{k}")
+        elif not maps:
+            st.caption("No coordinates coded for this type — no maps.")
+        with st.expander(f"Every {row.lower()}", expanded=False):
+            cols = ["instance"] + [q for q in sd.qualifiers if (g[q] != "").any()] + ["x", "y", "sb_x", "sb_y"]
+            st.dataframe(g[[c for c in cols if c in g.columns]], use_container_width=True, hide_index=True)
 
     def _explorer(self, sd) -> None:
         from fap.setpiecelab import analytics as A

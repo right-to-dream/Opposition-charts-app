@@ -109,7 +109,11 @@ def breakdown_of(sd: SetPieceData, g: pd.DataFrame) -> dict[str, pd.Series]:
     for q in sd.qualifiers:
         if q not in g:
             continue
-        vc = g[q][g[q] != ""].value_counts()
+        vals = g[q][g[q] != ""]
+        if "outcome" in q.lower():                       # "Threat, Shot" counts as both
+            vals = vals.str.split(r"\s*[,;]\s*").explode()
+            vals = vals[vals != ""]
+        vc = vals.value_counts()
         if len(vc):
             if q.strip().lower() in contests:            # Yes / No → who won it
                 vc = vc.rename(lambda v: contest_label(sd, v))
@@ -275,3 +279,58 @@ def contact_points(sd: SetPieceData, row: str, which: int) -> pd.DataFrame:
 def contact_rows(sd: SetPieceData, which: int, category: str | None = None) -> list[str]:
     rows = [r for r in sd.rows if category is None or sd.of(row=r)["category"].iloc[0] == category]
     return [r for r in rows if len(contact_points(sd, r, which))]
+
+
+def row_insights(sd: SetPieceData, row: str) -> list[str]:
+    """Findings for one coded set-piece type (e.g. Offensive Corner), every number from the file."""
+    team, out = sd.team, []
+    g = sd.of(row=row)
+    if g.empty:
+        return out
+    att = g["phase"].iloc[0] == "Attacking"
+    rc = result_col(sd)
+    out.append(f"{len(g)} {row.lower()}{'s' if len(g) != 1 else ''} coded — {team} {'taking' if att else 'defending'} them.")
+    exe, area, loc = (_main(g, _col(sd, n)) for n in ("Execution", "Area", "Location"))
+    if exe[2]:
+        vc = g[_col(sd, "Execution")][g[_col(sd, "Execution")] != ""].value_counts()
+        out.append("Delivery: " + ", ".join(f"{k.lower()} {v}" for k, v in vc.items()) + f" (of {exe[2]}).")
+    if area[2]:
+        vc = g[_col(sd, "Area")][g[_col(sd, "Area")] != ""].value_counts()
+        out.append("Target area: " + ", ".join(f"{k.lower()} {v}" for k, v in vc.items()) + f" (of {area[2]}).")
+    if loc[2]:
+        vc = g[_col(sd, "Location")][g[_col(sd, "Location")] != ""].value_counts()
+        out.append("Side: " + ", ".join(f"{k.lower()} {v}" for k, v in vc.items()) + f" (of {loc[2]}).")
+    for which, c in ((1, CONTESTS[0]), (2, CONTESTS[1])):
+        col = _col(sd, c)
+        outc = contact_columns(sd, which)[0]
+        if col:
+            y, n = _rate(g[col])
+            if n:
+                line = f"{c}: {team} won {y}/{n} ({y / n * 100:.0f}%)"
+                if outc:
+                    vc = g[outc][g[outc] != ""].str.split(r"\s*[,;]\s*").explode().value_counts()
+                    if len(vc):
+                        line += " — outcome: " + ", ".join(f"{k.lower()} {v}" for k, v in vc.items())
+                out.append(line + ".")
+    if rc:
+        o = g[rc].str.lower()
+        k = int(o.isin(DANGER).sum())
+        goals = int((o == "goal").sum())
+        out.append(f"Danger {'created' if att else 'conceded'}: {k}/{len(g)} ({_pct(k, len(g)):.0f}%)"
+                   + (f" · {goals} goal{'s' if goals != 1 else ''}" if goals else "")
+                   + (" · overall results: " + ", ".join(f"{a.lower()} {b}" for a, b in g[rc][g[rc] != ""].value_counts().items())
+                      if (g[rc] != "").any() else "") + ".")
+        ar = _col(sd, "Area")
+        if ar:
+            dg = g[o.isin(DANGER) & (g[ar] != "")]
+            if len(dg):
+                vc = dg[ar].value_counts()
+                out.append(f"Dangerous ones went to: " + ", ".join(f"{a.lower()} {b}" for a, b in vc.items()) + ".")
+    if g["x"].notna().any():
+        p = g[g["x"].notna()]
+        out.append(f"Landing point coded for {len(p)}/{len(g)} — average x {p['x'].mean():.0f} m, y {p['y'].mean():.0f} m.")
+    if "sb_x" in g and g["sb_x"].notna().any():
+        sb = g[g["sb_x"].notna()]
+        z = pd.Series([second_ball_zone(x, y) for x, y in zip(sb["sb_x"], sb["sb_y"])]).value_counts()
+        out.append(f"Second balls located in {len(sb)}: " + ", ".join(f"{a.lower()} {b}" for a, b in z.items()) + ".")
+    return out
