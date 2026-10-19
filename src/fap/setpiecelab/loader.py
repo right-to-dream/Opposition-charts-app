@@ -114,6 +114,16 @@ class SetPieceData:
     def rows(self) -> list[str]:
         return list(self.df["row"].value_counts().index)
 
+    def subset(self, **filters) -> "SetPieceData":
+        """Same data restricted to matching rows, e.g. ``subset(side="Left")``, ``subset(phase="Attacking")``,
+        ``subset(taker="24")`` — every analytics / chart function then works on the slice unchanged."""
+        d = self.df
+        for k, v in filters.items():
+            if v not in (None, "", "All"):
+                d = d[d[k].astype(str) == str(v)]
+        return SetPieceData(df=d.copy(), team=self.team, qualifiers=self.qualifiers, binary=self.binary,
+                            source_name=self.source_name, notes=self.notes)
+
 
 def read_table(src: Any, name: str = "") -> pd.DataFrame:
     if isinstance(src, pd.DataFrame):
@@ -139,17 +149,37 @@ _SECOND = ("second ball", "2nd ball", "second", "2nd")
 
 # outcome words, most dangerous first — the set piece's overall Result is the most dangerous one coded
 RESULT_RANK = ("goal", "shot", "threat", "cross", "recycle", "foul won", "corner won", "gk punch", "gk claim",
-               "clearance", "foul", "out")
+               "clearance", "foul", "out of bounds", "out")
+_GOAL_X = ("goal across", "goal x", "goal_x", "across")
+_GOAL_Y = ("goal height", "goal y", "goal_y", "height")
+_TAKER = ("taker", "kicker", "thrower", "player")
+
+
+def variant_of(row: str) -> str:
+    """Direct / Indirect free kick, Long / Short throw-in (empty for other types)."""
+    r = _key(row)
+    if "free kick" in r or "freekick" in r:
+        return "Direct" if "direct" in r and "indirect" not in r else "Indirect"
+    if "throw" in r:
+        return "Long" if "long" in r else "Short"
+    return ""
 RESULT_COL = "Result"
 
 
 def _coord_cols(columns) -> tuple[dict, dict]:
-    """``x_<kind>`` / ``x-<kind>`` / ``X <kind>`` columns → {kind: column} for x and y."""
+    """``x_<kind>`` / ``x-<kind>`` / ``X <kind>`` columns → {kind: column} for x and y. A y column whose kind
+    is misspelt ('Y_Long Ttrow In' next to 'X_Long Throw IN') is paired with the closest x kind."""
+    import difflib
     xs, ys = {}, {}
     for c in columns:
         m = _COORD.match(_key(c))
         if m:
             (xs if m.group(1) == "x" else ys)[m.group(2).strip()] = c
+    for yk in [k for k in ys if k not in xs]:
+        free = [k for k in xs if k not in ys]
+        best = difflib.get_close_matches(yk, free, n=1, cutoff=0.8)
+        if best:
+            ys[best[0]] = ys.pop(yk)
     return xs, ys
 
 
@@ -185,7 +215,10 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
     notes: list[str] = []
     row = raw[cols["row"]].astype(str).str.strip()
     xcols, ycols = _coord_cols(raw.columns)
-    coord_set = set(xcols.values()) | set(ycols.values())
+    gx_col = next((c for c in raw.columns if _key(c) in _GOAL_X), None)
+    gy_col = next((c for c in raw.columns if _key(c) in _GOAL_Y), None)
+    taker_col = next((c for c in raw.columns if _key(c) in _TAKER), None)
+    coord_set = set(xcols.values()) | set(ycols.values()) | {gx_col, gy_col, taker_col}
     qual_cols = [c for c in raw.columns if _key(c) not in _META and c not in coord_set and raw[c].notna().any()]
     df = pd.DataFrame({
         "row": row,
@@ -198,6 +231,11 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
         "flags": raw[cols["flags"]].fillna("").astype(str) if "flags" in cols else "",
     })
     df["n"] = df.groupby("row").cumcount() + 1
+    df["variant"] = row.map(variant_of)
+    df["taker"] = (raw[taker_col].map(lambda v: "" if pd.isna(v) else str(int(v)) if isinstance(v, float) and v.is_integer()
+                                      else str(v).strip()) if taker_col is not None else "")
+    df["goal_x_m"] = pd.to_numeric(raw[gx_col], errors="coerce") if gx_col is not None else np.nan
+    df["goal_y_m"] = pd.to_numeric(raw[gy_col], errors="coerce") if gy_col is not None else np.nan
     for c in qual_cols:
         df[str(c).strip()] = raw[c].map(_clean_qual)
     quals = [str(c).strip() for c in qual_cols]
@@ -212,6 +250,11 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
         quals = [RESULT_COL] + quals
         notes.append(f"Result = the most dangerous outcome coded in: {', '.join(out_cols)}.")
     eff = next((q for q in quals if q.lower() == "efficiency"), None)
+    if eff:                                            # "Goal" coded in Efficiency (direct free kicks)
+        if RESULT_COL not in df:
+            df[RESULT_COL] = ""
+            quals = [RESULT_COL] + quals
+        df.loc[df[eff].str.lower().eq("goal"), RESULT_COL] = "Goal"
     if eff:                                            # penalties: Efficiency Successful = scored
         pen = df["category"].eq("Penalty") & df[eff].str.lower().str.contains("success") \
             & ~df[eff].str.lower().str.contains("unsuccess")
@@ -255,6 +298,9 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
     df["extra_points"] = [len(p) - 1 if p else 0 for p in pts]
     df["landing_side"] = sides
     df["sb_x"], df["sb_y"] = sbx, sby
+    loc = next((q for q in quals if q.lower() in ("location", "side")), None)
+    side = df[loc].str.title() if loc else pd.Series("", index=df.index)
+    df["side"] = side.where(side.isin(["Left", "Right"]), df["landing_side"])
     missing_xy = sorted({r for r in df["row"].unique() if not kinds_for(_key(r))})
     if missing_xy:
         notes.append("No landing-point columns for: " + ", ".join(missing_xy))

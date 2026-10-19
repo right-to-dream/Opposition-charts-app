@@ -334,3 +334,74 @@ def row_insights(sd: SetPieceData, row: str) -> list[str]:
         z = pd.Series([second_ball_zone(x, y) for x, y in zip(sb["sb_x"], sb["sb_y"])]).value_counts()
         out.append(f"Second balls located in {len(sb)}: " + ", ".join(f"{a.lower()} {b}" for a, b in z.items()) + ".")
     return out
+
+
+# ------------------------------------------------------------------ takers, sides, groups
+def takers(sd: SetPieceData, g: pd.DataFrame | None = None) -> pd.DataFrame:
+    """One row per taker: set pieces taken, by type, 1st contact / 2nd ball won by the team, danger, goals."""
+    g = sd.df if g is None else g
+    g = g[g["taker"].astype(str) != ""] if "taker" in g else g.iloc[0:0]
+    rows = []
+    rc = result_col(sd)
+    c1, c2 = _col(sd, CONTESTS[0]), _col(sd, CONTESTS[1])
+    for t, d in g.groupby("taker"):
+        rec = {"Taker": f"#{t}", "taker": str(t), "Taken": len(d),
+               "Types": ", ".join(f"{k} {v}" for k, v in d["row"].value_counts().items())}
+        for col, lab in ((c1, "1st contact"), (c2, "2nd ball")):
+            if col:
+                y, n = _rate(d[col])
+                rec[f"{lab} won"], rec[f"{lab} decided"] = y, n
+                rec[f"{lab} won %"] = _pct(y, n)
+        if rc:
+            o = d[rc].str.lower()
+            rec["Dangerous"] = int(o.isin(DANGER).sum())
+            rec["Goals"] = int((o == "goal").sum())
+            rec["Danger %"] = _pct(rec["Dangerous"], len(d))
+        for s in ("Left", "Right"):
+            rec[s] = int((d["side"] == s).sum()) if "side" in d else 0
+        rows.append(rec)
+    out = pd.DataFrame(rows)
+    return out.sort_values(["Taken", "Dangerous"] if "Dangerous" in out else ["Taken"], ascending=False) if len(out) else out
+
+
+def group_compare(sd: SetPieceData, groups: list[tuple[str, pd.DataFrame]]) -> pd.DataFrame:
+    """Long table (qualifier, value, group, count, share %) for any groups (left vs right, direct vs indirect …)."""
+    rows = []
+    for label, g in groups:
+        for q, vc in breakdown_of(sd, g).items():
+            tot = vc.sum()
+            for v, k in vc.items():
+                rows.append({"qualifier": q, "value": v, "phase": label, "count": int(k), "share": k / tot * 100,
+                             "of": int(tot)})
+    return pd.DataFrame(rows)
+
+
+def side_insights(sd: SetPieceData, row: str) -> list[str]:
+    """Left vs right for one set-piece type."""
+    team, out = sd.team, []
+    g = sd.of(row=row)
+    if "side" not in g:
+        return out
+    rc = result_col(sd)
+    for s in ("Left", "Right"):
+        d = g[g["side"] == s]
+        if d.empty:
+            continue
+        bits = [f"{len(d)} from the {s.lower()}"]
+        for c in CONTESTS:
+            col = _col(sd, c)
+            if col:
+                y, n = _rate(d[col])
+                if n:
+                    bits.append(f"{c} won {y}/{n}")
+        if rc:
+            k = int(d[rc].str.lower().isin(DANGER).sum())
+            bits.append(f"danger {k}/{len(d)}")
+        area = _main(d, _col(sd, "Area"))
+        if area[2]:
+            bits.append(f"mostly to the {area[0].lower()} ({area[1]}/{area[2]})")
+        tk = d["taker"][d["taker"] != ""].value_counts() if "taker" in d else pd.Series(dtype=int)
+        if len(tk):
+            bits.append("taker " + ", ".join(f"#{a} {b}" for a, b in tk.items()))
+        out.append(f"**{s}:** " + " · ".join(bits) + ".")
+    return out

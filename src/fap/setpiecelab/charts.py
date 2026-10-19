@@ -266,3 +266,114 @@ def contact_map(sd: SetPieceData, row: str, which: int, *, theme: Theme = DARK) 
     if pts["cx"].min() > PITCH_L / 2 - 5:
         fig.update_xaxes(range=[PITCH_L / 2 - 3, PITCH_L + 3])
     return fig
+
+
+def compare_groups(sd: SetPieceData, groups: list[tuple[str, pd.DataFrame]], title: str, subtitle: str = "", *,
+                   theme: Theme = DARK, max_quals: int = 6) -> go.Figure:
+    """Any two-or-more groups side by side (left vs right, direct vs indirect …): every coded qualifier as %
+    of that group's coded instances."""
+    th = theme
+    groups = [(lab, g) for lab, g in groups if len(g)]
+    pc = A.group_compare(sd, groups)
+    if pc.empty:
+        return _base(go.Figure(), th, title, "nothing coded")
+    quals = [q for q in sd.qualifiers if q in set(pc["qualifier"])][:max_quals]
+    n = len(quals)
+    cols = min(3, n)
+    rows = int(np.ceil(n / cols))
+    colors = [th.team, th.accent, th.good, th.carry]
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=quals, horizontal_spacing=0.16, vertical_spacing=0.2)
+    for i, q in enumerate(quals):
+        r, c = divmod(i, cols)
+        g = pc[pc["qualifier"] == q]
+        order = g.groupby("value")["count"].sum().sort_values().index.tolist()
+        for k, (lab, _) in enumerate(groups):
+            d = g[g["phase"] == lab].set_index("value").reindex(order)
+            fig.add_trace(go.Bar(y=order, x=d["share"].fillna(0), orientation="h", name=f"{lab} ({len(groups[k][1])})",
+                                 marker_color=colors[k % len(colors)], showlegend=i == 0, legendgroup=lab,
+                                 text=[f"{int(v)}" if v == v and v else "" for v in d["count"]], textposition="outside",
+                                 cliponaxis=False,
+                                 hovertext=[f"<b>{q}: {v}</b><br>{lab}: {int(cn) if cn == cn else 0} of "
+                                            f"{int(of) if of == of else 0}" + (f" ({sh:.0f}%)" if sh == sh else "")
+                                            for v, cn, of, sh in zip(order, d["count"], d["of"], d["share"])],
+                                 hoverinfo="text"), r + 1, c + 1)
+        fig.update_xaxes(range=[0, 125], visible=False, row=r + 1, col=c + 1)
+    _base(fig, th, title, subtitle or "% of each group's coded instances · label = count", 150 + 230 * rows)
+    fig.update_layout(barmode="group", bargap=0.25, legend=dict(orientation="h", y=1.08, x=1, xanchor="right"))
+    for a in fig.layout.annotations:
+        a.font = dict(color=th.muted, size=12)
+    return fig
+
+
+def takers_chart(sd: SetPieceData, g: pd.DataFrame, title: str, *, theme: Theme = DARK) -> go.Figure:
+    """Who takes them: set pieces per taker, how many led to danger, and the team's 1st-contact rate."""
+    th = theme
+    t = A.takers(sd, g)
+    if t.empty:
+        return _base(go.Figure(), th, title, "no taker coded")
+    t = t.iloc[::-1]
+    fig = go.Figure()
+    safe = t["Taken"] - t.get("Dangerous", 0)
+    hover = []
+    for _, r in t.iterrows():
+        bits = [f"<b>{r['Taker']}</b> — {int(r['Taken'])} taken", r["Types"], f"left {r['Left']} · right {r['Right']}"]
+        if "1st contact decided" in r and r["1st contact decided"]:
+            bits.append(f"1st contact won {int(r['1st contact won'])}/{int(r['1st contact decided'])}")
+        if "2nd ball decided" in r and r["2nd ball decided"]:
+            bits.append(f"2nd ball won {int(r['2nd ball won'])}/{int(r['2nd ball decided'])}")
+        if "Dangerous" in r:
+            bits.append(f"dangerous {int(r['Dangerous'])} · goals {int(r['Goals'])}")
+        hover.append("<br>".join(bits))
+    if "Dangerous" in t:
+        fig.add_trace(go.Bar(y=t["Taker"], x=t["Dangerous"], orientation="h", name="Led to danger", marker_color=th.bad,
+                             hovertext=hover, hoverinfo="text"))
+    fig.add_trace(go.Bar(y=t["Taker"], x=safe, orientation="h", name="No danger", marker_color=th.team,
+                         text=[f"{int(v)} taken" + (f" · 1st contact {r['1st contact won']}/{r['1st contact decided']}"
+                                                    if r.get("1st contact decided") else "")
+                               for v, (_, r) in zip(t["Taken"], t.iterrows())],
+                         textposition="outside", cliponaxis=False, hovertext=hover, hoverinfo="text"))
+    _base(fig, th, title, "set pieces per taker · red = led to a goal / shot / threat · hover for details",
+          140 + 38 * len(t))
+    fig.update_layout(barmode="stack", xaxis=dict(visible=False, range=[0, t["Taken"].max() * 1.9]))
+    return fig
+
+
+GOAL_W, GOAL_H = 7.32, 2.44
+
+
+def goal_placement(sd: SetPieceData, row: str, *, theme: Theme = DARK) -> go.Figure:
+    """Where in the goal (across × height, metres from the left post / ground) — e.g. penalties."""
+    th = theme
+    g = sd.of(row=row)
+    pts = g[g["goal_x_m"].notna()] if "goal_x_m" in g else g.iloc[0:0]
+    fig = go.Figure()
+    fig.add_shape(type="rect", x0=-1.2, x1=GOAL_W + 1.2, y0=-0.4, y1=0, fillcolor="#3b8746", line=dict(width=0), layer="below")
+    for k in (1, 2):
+        fig.add_shape(type="line", x0=GOAL_W * k / 3, x1=GOAL_W * k / 3, y0=0, y1=GOAL_H,
+                      line=dict(color=th.grid, width=1, dash="dot"), layer="below")
+        fig.add_shape(type="line", x0=0, x1=GOAL_W, y0=GOAL_H * k / 3, y1=GOAL_H * k / 3,
+                      line=dict(color=th.grid, width=1, dash="dot"), layer="below")
+    fig.add_trace(go.Scatter(x=[0, 0, GOAL_W, GOAL_W], y=[0, GOAL_H, GOAL_H, 0], mode="lines",
+                             line=dict(color=th.text, width=6), hoverinfo="skip", showlegend=False))
+    rc = A.result_col(sd)
+    palette = _palette(th)
+    vals = pts[rc].replace("", "Not coded") if rc and len(pts) else pd.Series(dtype=str)
+    for i, v in enumerate(vals.value_counts().index if len(pts) else []):
+        d = pts[vals == v]
+        col = A.OUTCOME_COLORS.get(v.lower(), palette[i % len(palette)])
+        fig.add_trace(go.Scatter(x=d["goal_x_m"], y=d["goal_y_m"], mode="markers+text", name=f"{v} ({len(d)})",
+                                 text=[f"#{t}" if t else "" for t in d["taker"]], textposition="middle right",
+                                 textfont=dict(color=th.muted, size=10),
+                                 hovertext=[f"<b>{r['instance']}</b><br>{v}<br>across {r['goal_x_m']:.2f} m · height "
+                                            f"{r['goal_y_m']:.2f} m" + (f"<br>taker #{r['taker']}" if r["taker"] else "")
+                                            for _, r in d.iterrows()], hoverinfo="text",
+                                 marker=dict(size=18, color=col, line=dict(color=th.bg, width=1.5))))
+    _base(fig, th, f"{row} — placement in the goal", f"{len(pts)} of {len(g)} located · as seen from the taker · "
+          "dotted = thirds of the goal", 380)
+    fig.update_layout(xaxis=dict(range=[-1.2, GOAL_W + 1.2], visible=False),
+                      yaxis=dict(range=[-0.4, GOAL_H + 0.6], visible=False, scaleanchor="x", scaleratio=1),
+                      plot_bgcolor=th.bg)
+    if pts.empty:
+        fig.add_annotation(x=GOAL_W / 2, y=GOAL_H / 2, text="No goal placement coded", showarrow=False,
+                           font=dict(color=th.muted, size=14))
+    return fig

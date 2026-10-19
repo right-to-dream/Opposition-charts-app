@@ -427,3 +427,132 @@ def contact_map(sd: SetPieceData, row: str, which: int, *, theme: Theme = DARK):
         ax.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.13), ncol=4, frameon=False,
                   fontsize=8.5, labelcolor=th.text, handletextpad=0.3, columnspacing=1.0)
     return fig
+
+
+def compare_groups(sd: SetPieceData, groups: list, title: str, subtitle: str = "", lines: list[str] | None = None, *,
+                   theme: Theme = DARK, max_quals: int = 6):
+    """Static version of charts.compare_groups (+ optional findings above the bars)."""
+    import re as _re
+    th = theme
+    groups = [(lab, g) for lab, g in groups if len(g)]
+    pc = A.group_compare(sd, groups)
+    quals = [q for q in sd.qualifiers if not pc.empty and q in set(pc["qualifier"])][:max_quals]
+    text = [w for t in (lines or []) for w in textwrap.wrap(_re.sub(r"\*\*", "", t), 150)]
+    cols = min(3, max(1, len(quals)))
+    rows_ = int(np.ceil(len(quals) / cols)) if quals else 0
+    heights = [max(pc[pc["qualifier"] == q]["value"].nunique() for q in quals[r * cols:(r + 1) * cols]) for r in range(rows_)]
+    head = 1.3 + 0.24 * len(text)
+    H = head + sum(0.8 + 0.42 * h for h in heights) + 0.3
+    colors = [th.team, th.accent, th.good, th.carry]
+    with _rc(th):
+        fig = _figure(th, (16, H), title, subtitle or "   ·   ".join(
+            f"{lab} ({len(g)})" for lab, g in groups) + "   ·   bars = % of the group's coded instances, label = count")
+        for j, line in enumerate(text):
+            fig.text(0.03, 1 - (1.05 + 0.24 * j) / H, line, ha="left", va="top", fontsize=10, color=th.text)
+        from matplotlib.patches import Patch
+        fig.legend(handles=[Patch(color=colors[k % len(colors)], label=lab) for k, (lab, _) in enumerate(groups)],
+                   loc="upper right", bbox_to_anchor=(0.98, 1 - 0.2 / H), frameon=False, labelcolor=th.text, ncol=len(groups))
+        top = 1 - head / H
+        nb = len(groups)
+        for r in range(rows_):
+            hgt = 0.42 * heights[r] / H
+            for c in range(cols):
+                i = r * cols + c
+                if i >= len(quals):
+                    continue
+                q = quals[i]
+                g = pc[pc["qualifier"] == q]
+                order = g.groupby("value")["count"].sum().sort_values().index.tolist()
+                ax = fig.add_axes([0.1 + c * 0.315, top - hgt - 0.45 / H, 0.2, hgt])
+                yy = np.arange(len(order))
+                bw = 0.8 / nb
+                for k, (lab, _) in enumerate(groups):
+                    d = g[g["phase"] == lab].set_index("value").reindex(order)
+                    off = (nb - 1) / 2 * bw - k * bw
+                    sh, cn = d["share"].fillna(0).to_numpy(), d["count"].fillna(0).to_numpy()
+                    ax.barh(yy + off, sh, height=bw * 0.95, color=colors[k % len(colors)])
+                    for yi, v, n_ in zip(yy + off, sh, cn):
+                        if n_:
+                            ax.text(v + 2, yi, f"{int(n_)}", va="center", fontsize=8, color=th.text)
+                ax.set_yticks(yy, order, fontsize=9, color=th.text)
+                ax.set_xlim(0, 125)
+                ax.set_ylim(-0.7, max(len(order), 2) - 0.3)
+                ax.set_xticks([])
+                _style_ax(ax, th)
+                ax.spines["bottom"].set_visible(False)
+                ax.set_title(q.upper(), loc="left", fontsize=9, color=th.muted, fontweight="bold", pad=6)
+            top -= hgt + 0.8 / H
+    return fig
+
+
+def takers_chart(sd: SetPieceData, g, title: str, *, theme: Theme = DARK):
+    th = theme
+    t = A.takers(sd, g)
+    with _rc(th):
+        h = 1.8 + 0.5 * max(1, len(t))
+        fig = _figure(th, (11, h), title, "set pieces per taker   ·   red = led to a goal / shot / threat")
+        ax = fig.add_axes([0.12, 0.12, 0.62, 1 - 1.5 / h])
+        if t.empty:
+            ax.axis("off")
+            ax.text(0.5, 0.5, "No taker coded", ha="center", color=th.muted, fontsize=12)
+            return fig
+        t = t.iloc[::-1]
+        y = np.arange(len(t))
+        dang = t["Dangerous"].to_numpy() if "Dangerous" in t else np.zeros(len(t))
+        ax.barh(y, dang, color=th.bad, height=0.6)
+        ax.barh(y, t["Taken"] - dang, left=dang, color=th.team, height=0.6)
+        for yi, (_, r) in zip(y, t.iterrows()):
+            bits = [f"{int(r['Taken'])} taken"]
+            if r.get("1st contact decided"):
+                bits.append(f"1st contact {int(r['1st contact won'])}/{int(r['1st contact decided'])}")
+            if "Dangerous" in r:
+                bits.append(f"danger {int(r['Dangerous'])}")
+            if r.get("Goals"):
+                bits.append(f"{int(r['Goals'])} goal(s)")
+            bits.append(f"L {r['Left']} · R {r['Right']}")
+            ax.text(r["Taken"] + t["Taken"].max() * 0.02, yi, "   ·   ".join(bits), va="center", fontsize=9, color=th.text)
+        ax.set_yticks(y, t["Taker"], fontsize=11, color=th.text, fontweight="bold")
+        ax.set_xlim(0, t["Taken"].max() * 1.05)
+        ax.set_xticks([])
+        _style_ax(ax, th)
+        ax.spines["bottom"].set_visible(False)
+        ax.set_clip_on(False)
+    return fig
+
+
+def goal_placement(sd: SetPieceData, row: str, *, theme: Theme = DARK):
+    from matplotlib.patches import Rectangle
+    th = theme
+    W_, H_ = 7.32, 2.44
+    g = sd.of(row=row)
+    pts = g[g["goal_x_m"].notna()] if "goal_x_m" in g else g.iloc[0:0]
+    rc = A.result_col(sd)
+    with _rc(th):
+        fig = _figure(th, (10, 5.2), f"{sd.team} · {row} — placement in the goal",
+                      f"{len(pts)} of {len(g)} located   ·   as seen from the taker   ·   metres from the left post / ground")
+        ax = fig.add_axes([0.05, 0.12, 0.9, 0.66])
+        ax.add_patch(Rectangle((-1.2, -0.4), W_ + 2.4, 0.4, color="#3b8746"))
+        for k in (1, 2):
+            ax.plot([W_ * k / 3] * 2, [0, H_], color=th.grid, lw=1, ls=(0, (3, 3)))
+            ax.plot([0, W_], [H_ * k / 3] * 2, color=th.grid, lw=1, ls=(0, (3, 3)))
+        ax.plot([0, 0, W_, W_], [0, H_, H_, 0], color=th.text, lw=6, solid_capstyle="butt")
+        palette = [th.team, th.accent, th.good, th.carry]
+        if len(pts):
+            vals = pts[rc].replace("", "Not coded") if rc else pd.Series("Coded", index=pts.index)
+            for i, v in enumerate(vals.value_counts().index):
+                d = pts[vals == v]
+                col = A.OUTCOME_COLORS.get(v.lower(), palette[i % len(palette)])
+                ax.scatter(d["goal_x_m"], d["goal_y_m"], s=420, color=col, edgecolors=th.bg, lw=1.5, zorder=3,
+                           label=f"{v} ({len(d)})")
+                for _, r in d.iterrows():
+                    if r["taker"]:
+                        ax.text(r["goal_x_m"] + 0.32, r["goal_y_m"], f"#{r['taker']}", ha="left", va="center",
+                                fontsize=10, color=th.text, fontweight="bold", zorder=4)
+            ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.02), ncol=4, frameon=False, labelcolor=th.text)
+        else:
+            ax.text(W_ / 2, H_ / 2, "No goal placement coded", ha="center", color=th.muted, fontsize=13)
+        ax.set_xlim(-1.2, W_ + 1.2)
+        ax.set_ylim(-0.4, H_ + 0.6)
+        ax.set_aspect("equal")
+        ax.axis("off")
+    return fig

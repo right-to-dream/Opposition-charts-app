@@ -54,6 +54,22 @@ def _static_png(sig: str, chart: str, args: tuple, theme_name: str, _sd) -> byte
     return S.png(fn(_sd, *pos, theme=THEMES[theme_name], **kw), 300)
 
 
+@st.cache_data(show_spinner=False, max_entries=300)
+def _cached_png(key: str, _make) -> bytes:
+    from fap.setpiecelab import static as S
+    return S.png(_make(), 300)
+
+
+TYPE_LABELS = {"Offensive Free kick": "Indirect free kicks", "Direct Offensive Free kick": "Direct free kicks",
+               "Long Throw In": "Long throw-ins", "Throw In": "Throw-ins (short)", "Def Throw in": "Throw-ins against",
+               "Defensive Free kick": "Free kicks against", "Offensive Corner": "Corners", "Defensive Corner": "Corners against",
+               "Long GK": "Long goal kicks", "Penalty": "Penalties", "Penalty Against": "Penalties against"}
+
+
+def _type_label(row: str) -> str:
+    return TYPE_LABELS.get(row, row)
+
+
 def _wm(shell):
     return getattr(shell, "wm", None)
 
@@ -237,6 +253,7 @@ class SetPieceLabPage(Page):
     def _overview(self, sd) -> None:
         from fap.setpiecelab import analytics as A
         from fap.setpiecelab import charts as CH
+        from fap.setpiecelab import static as S
         tn, th = self._theme()
         ov = A.overview(sd)
         att, de = ov[ov["Phase"] == "Attacking"], ov[ov["Phase"] == "Defending"]
@@ -251,19 +268,33 @@ class SetPieceLabPage(Page):
         ])
         if sd.notes:
             st.caption(" · ".join(sd.notes))
-        st.markdown("#### Key findings")
-        for row, text in A.insights(sd):
-            st.markdown(f"- **{row}** — {text}" if row != "Headline" else f"- **{text}**")
-        c1, c2 = st.columns(2)
-        with c1:
-            _show(CH.overview_bars(sd, theme=th), "ov_bars")
-            _png_button("Download PNG", lambda: _static_png(sd._spl_sig, "overview", (), tn, sd),
-                        f"{sd.team}_set_pieces", "ov")
-        with c2:
-            _show(CH.contest_rates(sd, theme=th), "ov_contest")
-            _png_button("Download PNG", lambda: _static_png(sd._spl_sig, "contests", (), tn, sd),
-                        f"{sd.team}_first_contact_second_ball", "ct")
-        st.dataframe(ov, use_container_width=True, hide_index=True)
+        tabs = st.tabs([f"Attacking ({g(att, 'Count')})", f"Defending ({g(de, 'Count')})"])
+        for phase, tab in zip(("Attacking", "Defending"), tabs):
+            with tab:
+                sub = sd.subset(phase=phase)
+                if sub.df.empty:
+                    st.info(f"No {phase.lower()} set pieces coded.")
+                    continue
+                psig = f"{sd._spl_sig}|{phase}"
+                st.markdown("#### Key findings")
+                for row, text in A.insights(sub):
+                    st.markdown(f"- **{_type_label(row)}** — {text}" if row != "Headline" else f"- **{text}**")
+                c1, c2 = st.columns(2)
+                with c1:
+                    _show(CH.overview_bars(sub, theme=th), f"ov_bars_{phase}")
+                    _png_button("Download PNG", lambda sub=sub, psig=psig: _static_png(psig, "overview", (), tn, sub),
+                                f"{sd.team}_{phase}_set_pieces", f"ov_{phase}")
+                with c2:
+                    _show(CH.contest_rates(sub, theme=th), f"ov_contest_{phase}")
+                    _png_button("Download PNG", lambda sub=sub, psig=psig: _static_png(psig, "contests", (), tn, sub),
+                                f"{sd.team}_{phase}_first_contact_second_ball", f"ct_{phase}")
+                if phase == "Attacking" and (sub.df["taker"] != "").any():
+                    title = f"{sd.team} — takers (all attacking set pieces)"
+                    _show(CH.takers_chart(sub, sub.df, title, theme=th), "ov_takers")
+                    _png_button("Download PNG", lambda sub=sub, title=title: _cached_png(
+                        f"{psig}|{tn}|takers", lambda: S.takers_chart(sub, sub.df, title, theme=th)),
+                        f"{sd.team}_takers", "ov_takers")
+                st.dataframe(A.overview(sub), use_container_width=True, hide_index=True)
         st.markdown("#### Opposition report cards")
         st.caption("One PNG page per set piece — landing map, key numbers and every qualifier.")
         if st.button("Prepare all report cards (PNG, ZIP)", key="spl_cards"):
@@ -280,50 +311,75 @@ class SetPieceLabPage(Page):
 
     # ---- explorer -----------------------------------------------------------------
     def _by_type(self, sd) -> None:
-        """Corners / free kicks / throw-ins …, each split into its coded types (Offensive Corner, Defensive
-        Corner …) with their own cards, findings, charts and maps, plus a taking-vs-defending comparison."""
+        """Attacking | Defending → Corners / Free kicks / Throw-ins … → each coded type (direct / indirect,
+        long / short …) with a left / right filter, a left-vs-right comparison and the takers."""
         from fap.setpiecelab import analytics as A
         from fap.setpiecelab import charts as CH
+        from fap.setpiecelab import static as S
         tn, th = self._theme()
         sig = sd._spl_sig
-        cats = A.categories(sd)
-        if not cats:
+        phases = [p for p in ("Attacking", "Defending") if (sd.df["phase"] == p).any()]
+        if not phases:
             st.info("No set-piece types recognised.")
             return
-        sub = st.tabs([f"{A.CATEGORY_PLURAL.get(c, c)} ({len(sd.of(category=c))})" for c in cats])
-        for cat, tab in zip(cats, sub):
-            with tab:
-                rows = [r for r in sd.rows if sd.of(row=r)["category"].iloc[0] == cat]
-                rows.sort(key=lambda r: (sd.of(row=r)["phase"].iloc[0] != "Attacking", r))
-                both = len({sd.of(row=r)["phase"].iloc[0] for r in rows}) > 1
-                labels = [f"{r} ({len(sd.of(row=r))})" for r in rows] + (["Taking vs defending"] if both else [])
-                inner = st.tabs(labels) if len(labels) > 1 else [st.container()]
-                for r, t in zip(rows, inner):
-                    with t:
-                        self._type_section(sd, r, tn, th, sig)
-                if both:
-                    with inner[-1]:
-                        st.markdown("##### Key findings")
-                        for line in A.category_insights(sd, cat):
-                            st.markdown(f"- {line}")
-                        _show(CH.category_compare(sd, cat, theme=th), f"cat_{cat}")
-                        _png_button("Download PNG (comparison + findings)",
-                                    lambda c=cat: _static_png(sig, "category", (("_pos", (c,)),), tn, sd),
-                                    f"{sd.team}_{A.CATEGORY_PLURAL.get(cat, cat)}_taking_vs_defending", f"cat_{cat}")
-                        st.dataframe(A.category_table(sd, cat).set_index("Phase").T.astype(str), use_container_width=True)
+        top = st.tabs([f"{p} ({int((sd.df['phase'] == p).sum())})" for p in phases])
+        for phase, ptab in zip(phases, top):
+            with ptab:
+                sub = sd.subset(phase=phase)
+                cats = A.categories(sub)
+                ctabs = st.tabs([f"{A.CATEGORY_PLURAL.get(c, c)} ({len(sub.of(category=c))})" for c in cats])
+                for cat, ctab in zip(cats, ctabs):
+                    with ctab:
+                        rows = [r for r in sub.rows if sub.of(row=r)["category"].iloc[0] == cat]
+                        rows.sort(key=lambda r: (_type_label(r), r))
+                        labels = [f"{_type_label(r)} ({len(sub.of(row=r))})" for r in rows]
+                        if len(rows) > 1:
+                            labels.append(" vs ".join(_type_label(r) for r in rows))
+                        inner = st.tabs(labels) if len(labels) > 1 else [st.container()]
+                        for r, t in zip(rows, inner):
+                            with t:
+                                self._type_section(sub, r, tn, th, sig)
+                        if len(rows) > 1:
+                            with inner[-1]:
+                                groups = [(_type_label(r), sub.of(row=r)) for r in rows]
+                                title = f"{sd.team} — " + " vs ".join(lab for lab, _ in groups)
+                                lines = [f"**{_type_label(r)}** — " + text for r_, text in A.insights(sub) for r in rows if r_ == r]
+                                for line in lines:
+                                    st.markdown(f"- {line}")
+                                _show(CH.compare_groups(sub, groups, title, theme=th), f"cmp_{phase}_{cat}")
+                                _png_button("Download PNG", lambda groups=groups, title=title, lines=lines: _cached_png(
+                                    f"{sig}|{tn}|cmp|{phase}|{cat}",
+                                    lambda: S.compare_groups(sub, groups, title, lines=lines, theme=th)),
+                                    _fname(title), f"cmp_{phase}_{cat}")
+                                if phase == "Attacking" and (sub.of(category=cat)["taker"] != "").any():
+                                    tt = f"{sd.team} — {A.CATEGORY_PLURAL.get(cat, cat).lower()}: takers"
+                                    _show(CH.takers_chart(sub, sub.of(category=cat), tt, theme=th), f"cmp_tk_{cat}")
+                                    _png_button("Download PNG", lambda cat=cat, tt=tt: _cached_png(
+                                        f"{sig}|{tn}|tk|{cat}", lambda: S.takers_chart(sub, sub.of(category=cat), tt, theme=th)),
+                                        _fname(tt), f"cmp_tk_{cat}")
 
-    def _type_section(self, sd, row: str, tn: str, th, sig: str) -> None:
-        """Everything for ONE coded set-piece type (e.g. Offensive Corner)."""
+    def _type_section(self, sd_all, row: str, tn: str, th, sig: str) -> None:
+        """Everything for ONE coded set-piece type, with a left / right filter."""
         from fap.setpiecelab import analytics as A
         from fap.setpiecelab import charts as CH
-        g = sd.of(row=row)
-        att = g["phase"].iloc[0] == "Attacking"
-        sm = A.summarise(sd, g)
+        from fap.setpiecelab import static as S
+        g_all = sd_all.of(row=row)
+        att = g_all["phase"].iloc[0] == "Attacking"
         k = f"{row}".replace(" ", "_")
+        sides = [s_ for s_ in ("Left", "Right") if (g_all["side"] == s_).any()]
+        side = "All"
+        if sides:
+            side = st.radio("Side", ["All"] + sides, horizontal=True, key=f"bt_side_{k}",
+                            format_func=lambda v: v if v == "All" else f"{v} ({int((g_all['side'] == v).sum())})")
+        sd = sd_all.subset(side=side) if side != "All" else sd_all
+        ssig = f"{sig}|{side}"
+        g = sd.of(row=row)
+        label = _type_label(row) + ("" if side == "All" else f" · {side.lower()} side")
+        sm = A.summarise(sd, g)
         c1 = f"{sm['1st contact won']}/{sm['1st contact decided']}" if sm.get("1st contact decided") else "–"
         c2 = f"{sm['2nd ball won']}/{sm['2nd ball decided']}" if sm.get("2nd ball decided") else "–"
         C.render_metric_row([
-            C.metric_card_html(row, str(sm["Count"]), hint=f"{sd.team} {'taking' if att else 'defending'}"),
+            C.metric_card_html(label, str(sm["Count"]), hint=f"{sd.team} {'taking' if att else 'defending'} · coded as {row}"),
             C.metric_card_html("1st contact won", c1, hint=f"{sd.team} won it"),
             C.metric_card_html("2nd ball won", c2, hint=f"{sd.team} won it"),
             C.metric_card_html("Danger " + ("created" if att else "conceded"), str(sm.get("Dangerous (goal/shot/threat)", 0)),
@@ -332,35 +388,56 @@ class SetPieceLabPage(Page):
         st.markdown("##### Key findings")
         for line in A.row_insights(sd, row):
             st.markdown(f"- {line}")
-        st.markdown(f"##### {row} — how it is {'taken' if att else 'defended'}")
+        if side == "All" and len(sides) == 2:
+            st.markdown(f"##### {_type_label(row)} — left vs right")
+            for line in A.side_insights(sd_all, row):
+                st.markdown(f"- {line}")
+            groups = [(s_, g_all[g_all["side"] == s_]) for s_ in sides]
+            title = f"{sd.team} — {_type_label(row)}: left vs right"
+            _show(CH.compare_groups(sd_all, groups, title, theme=th), f"bt_lr_{k}")
+            _png_button("Download PNG", lambda: _cached_png(
+                f"{sig}|{tn}|lr|{row}", lambda: S.compare_groups(sd_all, groups, title, lines=A.side_insights(sd_all, row),
+                                                                theme=th)), _fname(title), f"bt_lr_{k}")
+        if att and (g["taker"] != "").any():
+            st.markdown(f"##### {label} — takers")
+            title = f"{sd.team} — {label}: takers"
+            _show(CH.takers_chart(sd, g, title, theme=th), f"bt_tk_{k}")
+            _png_button("Download PNG", lambda: _cached_png(f"{ssig}|{tn}|tk|{row}", lambda: S.takers_chart(sd, g, title, theme=th)),
+                        _fname(title), f"bt_tk_{k}")
+        st.markdown(f"##### {label} — how it is {'taken' if att else 'defended'}")
         _show(CH.qualifier_grid(sd, row, theme=th), f"bt_grid_{k}")
-        _png_button("Download PNG", lambda: _static_png(sig, "qualifiers", (("_pos", (row,)),), tn, sd),
-                    f"{sd.team}_{row}_details", f"bt_grid_{k}")
+        _png_button("Download PNG", lambda: _static_png(ssig, "qualifiers", (("_pos", (row,)),), tn, sd),
+                    f"{sd.team}_{label}_details", f"bt_grid_{k}")
         area = A._col(sd, "Area")
         if area and A.result_col(sd) and (g[area] != "").any():
-            st.markdown(f"##### {row} — result by target area")
+            st.markdown(f"##### {label} — result by target area")
             _show(CH.outcome_by(sd, row, area, theme=th), f"bt_ob_{k}")
-            _png_button("Download PNG", lambda: _static_png(sig, "outcome_by", (("_pos", (row, area)),), tn, sd),
-                        f"{sd.team}_{row}_result_by_area", f"bt_ob_{k}")
+            _png_button("Download PNG", lambda: _static_png(ssig, "outcome_by", (("_pos", (row, area)),), tn, sd),
+                        f"{sd.team}_{label}_result_by_area", f"bt_ob_{k}")
+        if "goal_x_m" in g and g["goal_x_m"].notna().any():
+            st.markdown(f"##### {label} — placement in the goal")
+            _show(CH.goal_placement(sd, row, theme=th), f"bt_goal_{k}")
+            _png_button("Download PNG", lambda: _cached_png(f"{ssig}|{tn}|goal|{row}", lambda: S.goal_placement(sd, row, theme=th)),
+                        f"{sd.team}_{label}_goal_placement", f"bt_goal_{k}")
         maps = False
         for which, title in ((1, "1st contact outcome — where the ball lands"),
                              (2, "2nd contact outcome — where the second ball is played")):
             if len(A.contact_points(sd, row, which)):
                 maps = True
-                st.markdown(f"##### {row} — {title}")
+                st.markdown(f"##### {label} — {title}")
                 _show(CH.contact_map(sd, row, which, theme=th), f"bt_c{which}_{k}")
-                _png_button("Download PNG", lambda w=which: _static_png(sig, "contact", (("_pos", (row, w)),), tn, sd),
-                            f"{sd.team}_{row}_contact{which}_outcome", f"bt_c{which}_{k}")
+                _png_button("Download PNG", lambda w=which: _static_png(ssig, "contact", (("_pos", (row, w)),), tn, sd),
+                            f"{sd.team}_{label}_contact{which}_outcome", f"bt_c{which}_{k}")
         if g["x"].notna().any():
-            st.markdown(f"##### {row} — landing points & second balls (all results)")
+            st.markdown(f"##### {label} — landing points & second balls (all results)")
             rc = A.result_col(sd)
             _show(CH.landing_map(sd, row, color_by=rc, theme=th), f"bt_map_{k}")
-            _png_button("Download PNG", lambda: _static_png(sig, "landing", (("_pos", (row,)), ("color_by", rc)), tn, sd),
-                        f"{sd.team}_{row}_landing", f"bt_map_{k}")
+            _png_button("Download PNG", lambda: _static_png(ssig, "landing", (("_pos", (row,)), ("color_by", rc)), tn, sd),
+                        f"{sd.team}_{label}_landing", f"bt_map_{k}")
         elif not maps:
-            st.caption("No coordinates coded for this type — no maps.")
-        with st.expander(f"Every {row.lower()}", expanded=False):
-            cols = ["instance"] + [q for q in sd.qualifiers if (g[q] != "").any()] + ["x", "y", "sb_x", "sb_y"]
+            st.caption("No pitch coordinates coded for this type — no pitch maps.")
+        with st.expander(f"Every {label.lower()}", expanded=False):
+            cols = ["instance", "side", "taker"] + [q for q in sd.qualifiers if (g[q] != "").any()] + ["x", "y", "sb_x", "sb_y"]
             st.dataframe(g[[c for c in cols if c in g.columns]], use_container_width=True, hide_index=True)
 
     def _explorer(self, sd) -> None:

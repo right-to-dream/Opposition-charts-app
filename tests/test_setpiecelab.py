@@ -178,3 +178,34 @@ def test_contact_maps():
     for w in (1, 2):
         CH.contact_map(sd, "Offensive Corner", w)
         assert S.png(S.contact_map(sd, "Offensive Corner", w), 30)[1:4] == b"PNG"
+
+
+def test_v2_variants_sides_takers_goal_and_typo_coords():
+    from fap.setpiecelab import static as S
+    raw = pd.DataFrame({
+        "Timeline": ["Pharco Set pieces"] * 5,
+        "Row": ["Long Throw In", "Throw In", "Direct Offensive Free kick", "Offensive Free kick", "Penalty"],
+        "1st contact": ["Yes", None, None, "No", None], "1st contact Outcome": ["Threat", None, None, "Out of bounds", None],
+        "Efficiency": [None, None, "Goal", None, "Successful"],
+        "Location": ["Left", "Right", None, "Right", None],
+        "X_Long Throw IN": [98.4, None, None, None, None], "Y_Long Ttrow In": [37.3, None, None, None, None],
+        "Goal across ": [None, None, None, None, 6.57], "Goal Height": [None, None, None, None, 2.26],
+        "Taker": [24, 24, 7, 22, 24],
+    })
+    sd = load_setpieces(raw, "p.csv")
+    df = sd.df
+    assert "Taker" not in sd.qualifiers and "Goal across" not in sd.qualifiers
+    assert list(df["variant"]) == ["Long", "Short", "Direct", "Indirect", ""]
+    assert list(df["side"][:2]) == ["Left", "Right"] and list(df["taker"]) == ["24", "24", "7", "22", "24"]
+    assert (df.at[0, "x"], df.at[0, "y"]) == (98.4, 37.3)                       # misspelt Y column paired
+    assert df.at[2, "Result"] == "Goal" and df.at[4, "Result"] == "Goal" and (df.at[4, "goal_x_m"], df.at[4, "goal_y_m"]) == (6.57, 2.26)
+    left = sd.subset(side="Left")
+    assert list(left.df["row"]) == ["Long Throw In"]
+    t = A.takers(sd).set_index("Taker")
+    assert t.loc["#24", "Taken"] == 3 and t.loc["#7", "Goals"] == 1
+    assert any("Left" in s for s in A.side_insights(sd, "Long Throw In"))
+    CH.takers_chart(sd, sd.df, "t"); CH.goal_placement(sd, "Penalty")
+    CH.compare_groups(sd, [("A", df[:2]), ("B", df[2:])], "t")
+    for fig in (S.takers_chart(sd, sd.df, "t"), S.goal_placement(sd, "Penalty"),
+                S.compare_groups(sd, [("A", df[:2]), ("B", df[2:])], "t", lines=["**x** y"])):
+        assert S.png(fig, 30)[1:4] == b"PNG"
