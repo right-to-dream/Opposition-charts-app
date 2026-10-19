@@ -235,3 +235,31 @@ def test_interior_bbox_maps_corners_exactly():
         assert gx == pytest.approx(cx, abs=0.4)
         assert gy == pytest.approx(cy, abs=0.4)
     plt.close(fig)
+
+
+def test_board_batch_is_idempotent_and_clamped():
+    from fap.ui.builtin.tagging_canvas import parse_result
+    b = parse_result({"kind": "batch", "token": "t", "seq": 3,
+                      "events": [{"cid": "t-1", "action": "point", "ifx": 0.5, "ify": 1.7},
+                                 {"cid": "t-2", "action": "line", "ifx": 0, "ify": 0, "ifx2": 1, "ify2": 1},
+                                 {"cid": "t-3", "action": "point", "ifx": "x"},          # malformed → dropped
+                                 {"action": "point", "ifx": 0.1, "ify": 0.1}],           # no id → dropped
+                      "ops": [{"aid": "t-op4", "action": "undo"}, {"aid": "t-op5", "action": "rm -rf"}]})
+    assert b["kind"] == "batch" and [e["cid"] for e in b["events"]] == ["t-1", "t-2"]
+    assert b["events"][0]["ify"] == 1.0 and [o["action"] for o in b["ops"]] == ["undo"]
+    assert parse_result({"kind": "batch", "events": []}) is None                        # no seq
+
+
+def test_metres_follow_the_session_pitch_size():
+    from fap.tagging import coordinates as TC
+    from fap.tagging.export import CSV_COLUMNS, METRE_COLUMNS, session_to_csv, session_to_rows
+    s = TaggingSession(pitch_length=100.0, pitch_width=64.0)
+    s.add_event(TagEvent(event_type="pass", coordinate_space="pitch", x=50, y=25, x2=100, y2=50))
+    s.add_event(TagEvent(event_type="shot_on_target", coordinate_space="goal", goal_x=50, goal_y=50))
+    assert TC.to_metres(50, 105) == 52.5 and TC.from_metres(34, 68) == 50.0
+    rows = session_to_rows(s, metres=True)
+    assert (rows[0]["x_m"], rows[0]["y_m"], rows[0]["end_x_m"], rows[0]["end_y_m"]) == (50.0, 16.0, 100.0, 32.0)
+    assert (rows[1]["goal_x_m"], rows[1]["goal_y_m"]) == (3.66, 1.22)
+    assert session_to_csv(s).splitlines()[0] == ",".join(CSV_COLUMNS)                  # Open Play schema unchanged
+    assert session_to_csv(s, metres=True).splitlines()[0] == ",".join(CSV_COLUMNS + METRE_COLUMNS)
+    assert TaggingSession.from_dict(s.to_dict()).pitch_length == 100.0

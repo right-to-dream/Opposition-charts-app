@@ -37,6 +37,38 @@ def _frac(value: Any) -> float | None:
     return max(0.0, min(1.0, float(value)))
 
 
+_BATCH_EVENTS = frozenset({"point", "line"})
+_BATCH_OPS = frozenset({"select", "delete", "cancel", "undo", "redo"})
+
+
+def _parse_batch(value: dict) -> dict[str, Any] | None:
+    """``{kind: batch, token, seq, events: [{cid, action, ifx, ify[, ifx2, ify2]}], ops: [{aid, action[, select]}]}``.
+    Every event / op carries a unique id so Python applies each exactly once, however often the browser
+    re-sends it (nothing is lost when clicks come faster than Streamlit reruns)."""
+    seq = value.get("seq")
+    if not isinstance(seq, (int, float)):
+        return None
+    events, ops = [], []
+    for e in (value.get("events") or [])[:500]:
+        if not isinstance(e, dict) or e.get("action") not in _BATCH_EVENTS or not isinstance(e.get("cid"), str):
+            continue
+        out = {"cid": e["cid"][:64], "action": e["action"]}
+        keys = ("ifx", "ify") + (("ifx2", "ify2") if e["action"] == "line" else ())
+        vals = [_frac(e.get(k)) for k in keys]
+        if any(v is None for v in vals):
+            continue
+        out.update(dict(zip(keys, vals)))
+        events.append(out)
+    for o in (value.get("ops") or [])[:200]:
+        if not isinstance(o, dict) or o.get("action") not in _BATCH_OPS or not isinstance(o.get("aid"), str):
+            continue
+        out = {"aid": o["aid"][:64], "action": o["action"]}
+        if isinstance(o.get("select"), str) and o["select"]:
+            out["select"] = o["select"][:64]
+        ops.append(out)
+    return {"kind": "batch", "ts": float(seq), "events": events, "ops": ops}
+
+
 def parse_result(value: Any) -> dict[str, Any] | None:
     """Normalise the raw component value into a clean intent dict, or ``None``.
 
@@ -45,6 +77,8 @@ def parse_result(value: Any) -> dict[str, Any] | None:
     malformed is dropped. Never raises."""
     if not isinstance(value, dict):
         return None
+    if value.get("kind") == "batch":
+        return _parse_batch(value)
     ts = value.get("ts")
     if not isinstance(ts, (int, float)):
         return None
@@ -70,6 +104,20 @@ def parse_result(value: Any) -> dict[str, Any] | None:
         out["select"] = sel
     # "delete" and "cancel" carry no payload
     return out
+
+
+def tagging_board(*, space: str, dims: dict[str, float], overlay: list[dict[str, Any]], mode: str,
+                  toggles: dict[str, Any], ctx: dict[str, Any], acked: list[str], selected: str | None,
+                  key: str, editable: bool = True) -> tuple[bool, dict[str, Any] | None]:
+    """The professional board: the browser draws the pitch (``dims`` metres) or the goal itself, keeps a local
+    queue of clicks and reports them in idempotent batches; ``acked`` = ids Python has stored."""
+    try:
+        value = _component()(space=space, dims=dims, overlay=overlay, mode=mode, toggles=toggles, ctx=ctx,
+                             acked=list(acked), selected=selected or "", editable=bool(editable),
+                             key=key, default=None)
+    except Exception:
+        return False, None
+    return True, parse_result(value)
 
 
 def tagging_canvas(*, image: str, overlay: list[dict[str, Any]], mode: str,

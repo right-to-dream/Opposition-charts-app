@@ -32,6 +32,9 @@ _SESSION = "_tag_session"          # TaggingSession in session_state
 _SEL = "_tag_selected"             # selected event id
 _TS = "_tag_last_ts"               # last processed canvas action ts
 _LOADED = "_tag_loaded"
+_SEEN = "_tag_seen"                # ids of canvas events / ops already applied (idempotent sync)
+_ACKED = "_tag_acked"              # ids to confirm back to the browser on the next render
+TEAM_COLORS = ("#1f6feb", "#e5484d", "#8b96a8")
 
 
 @page_registry.register
@@ -49,7 +52,7 @@ class TaggingStudioPage(Page):
 
         C.render_section_title(
             "Tagging Studio", eyebrow="Analysis", icon_name="target",
-            subtitle="Tag events on the pitch and in the goal, then export analysis-ready CSV.")
+            subtitle="Tag events on the pitch and in the goal (metres, default 105 × 68), then export analysis-ready CSV.")
 
         # ---- toolbar ----
         bar = st.columns([1, 4, 1.6, 1, 1])
@@ -66,12 +69,12 @@ class TaggingStudioPage(Page):
         self._sent_banner(shell)
 
         controls = self._controls(session, space)
-        left, right = st.columns([3, 2])
+        self._canvas(shell, svc, session, space, controls)
+        left, right = st.columns([1, 1])
         with left:
-            self._canvas(shell, svc, session, space, controls)
+            self._selected_panel(shell, svc, session)
         with right:
             self._native_add(shell, svc, session, space, controls)
-            self._selected_panel(shell, svc, session)
 
         self._event_table(session)
         self._status_bar(shell, svc, session)
@@ -130,6 +133,15 @@ class TaggingStudioPage(Page):
             session.competition = m[1].text_input("Competition", value=session.competition, key="tag_comp")
             session.match_date = m[2].text_input("Date", value=session.match_date, key="tag_date")
             session.opponent = m[3].text_input("Opponent", value=session.opponent, key="tag_opp")
+            d = st.columns([1, 1, 2])
+            pl = d[0].number_input("Pitch length (m)", 90.0, 120.0, float(session.pitch_length or 105.0), 0.5,
+                                   key="tag_pitch_len", help="Default 105 m")
+            pw = d[1].number_input("Pitch width (m)", 45.0, 90.0, float(session.pitch_width or 68.0), 0.5,
+                                   key="tag_pitch_wid", help="Default 68 m")
+            session.set_meta(pitch_length=float(pl), pitch_width=float(pw))
+            d[2].caption("Coordinates are shown and exported in metres on this pitch (x along the length from the "
+                         "left goal line, y across from the bottom touchline). The canonical 0–100 columns stay "
+                         "the same for Open Play.")
             t = st.columns(7)
             toggles = {
                 "grid": t[0].checkbox("Grid", key="tag_tg_grid"),
@@ -147,47 +159,94 @@ class TaggingStudioPage(Page):
                 "video_timestamp": (float(video_ts) or None), "toggles": toggles}
 
     # ------------------------------------------------------------------ canvas
+    def _team_color(self, session, team: str) -> str:
+        return {session.home_team: TEAM_COLORS[0], session.away_team: TEAM_COLORS[1]}.get(team, TEAM_COLORS[2])
+
+    def _overlay(self, session, space) -> list[dict]:
+        out = []
+        for i, e in enumerate(session.events, 1):
+            if e.coordinate_space != space:
+                continue
+            if space == "goal":
+                if e.goal_x is None or e.goal_y is None:
+                    continue
+                fx, fy = TC.goal_fraction_from_canonical(e.goal_x, e.goal_y)
+            else:
+                if e.x is None or e.y is None:
+                    continue
+                fx, fy = TC.pitch_fraction_from_canonical(e.x, e.y)
+            tag = tag_by_key(e.event_type)
+            m = {"id": e.id, "ifx": fx, "ify": fy, "color": self._team_color(session, e.team),
+                 "label": f"#{i} {tag.label if tag else e.event_type}" + (f" · {e.player}" if e.player else "")
+                          + (f" · {e.outcome}" if e.outcome else "") + (f" · {self._clock(e)}" if e.minute else "")}
+            if space == "pitch" and e.x2 is not None and e.y2 is not None:
+                m["ifx2"], m["ify2"] = TC.pitch_fraction_from_canonical(e.x2, e.y2)
+            out.append(m)
+        return out
+
     def _canvas(self, shell, svc, session, space, controls) -> None:
         tag = controls["tag"]
         mode = "line" if (tag and tag.geometry == "line" and space == "pitch") else "point"
-        image, bbox, overlay = self._render(session, space, controls["toggles"])
-        colors = {"save": self._theme().colors["accent"], "goal": self._theme().colors["danger"]}
-        rendered = False
+        ctx = {"label": " · ".join(x for x in ((tag.label if tag else controls["event_type"]), controls["team"],
+                                                controls["player"], controls["outcome"]) if x),
+               "color": self._team_color(session, controls["team"]), "attack": session.attack_direction}
+        dims = {"length": float(session.pitch_length or 105.0), "width": float(session.pitch_width or 68.0)}
+        rendered, intent = False, None
         try:
-            from fap.ui.builtin.tagging_canvas import tagging_canvas
-            rendered, intent = tagging_canvas(
-                image=image, overlay=overlay, mode=mode,
-                readout={"bbox": bbox}, colors=colors, nonce=self._nonce(session),
-                key=f"tagcanvas_{space}", editable=True)
+            from fap.ui.builtin.tagging_canvas import tagging_board
+            rendered, intent = tagging_board(space=space, dims=dims, overlay=self._overlay(session, space), mode=mode,
+                                             toggles=controls["toggles"], ctx=ctx,
+                                             acked=st.session_state.get(_ACKED, []),
+                                             selected=st.session_state.get(_SEL), key=f"tagboard_{space}")
         except Exception:
             rendered, intent = False, None
         if not rendered:
-            st.image(base64.b64decode(image.split(",", 1)[1]), use_container_width=True)
-            st.caption("Interactive canvas unavailable — use the coordinate inputs on the right.")
-        elif intent is not None:
-            self._apply_intent(shell, svc, session, space, controls, intent)
+            st.caption("Interactive board unavailable — use the coordinate inputs on the right.")
+        elif intent is not None and intent.get("kind") == "batch":
+            self._apply_batch(shell, svc, session, space, controls, intent)
 
-    def _apply_intent(self, shell, svc, session, space, controls, intent) -> None:
-        if intent["ts"] <= st.session_state.get(_TS, 0.0):
-            return                                   # stale value Streamlit re-delivered
-        st.session_state[_TS] = intent["ts"]
-        action = intent["action"]
-        if action == "select":
-            st.session_state[_SEL] = intent["select"]
-        elif action == "delete":
-            self._delete_selected(session)
-        elif action == "point":
+    def _apply_batch(self, shell, svc, session, space, controls, batch) -> None:
+        """Apply every event / op the browser sent exactly once (ids remembered), then confirm them."""
+        seen = st.session_state.setdefault(_SEEN, [])
+        seen_set = set(seen)
+        changed = False
+        for e in batch["events"]:
+            if e["cid"] in seen_set:
+                continue
             if space == "goal":
-                gx, gy = TC.canonical_from_goal_fraction(intent["ifx"], intent["ify"])
+                gx, gy = TC.canonical_from_goal_fraction(e["ifx"], e["ify"])
                 self._create(session, controls, space, goal_x=gx, goal_y=gy)
+            elif e["action"] == "line":
+                x, y = TC.canonical_from_pitch_fraction(e["ifx"], e["ify"])
+                x2, y2 = TC.canonical_from_pitch_fraction(e["ifx2"], e["ify2"])
+                self._create(session, controls, space, x=x, y=y, x2=x2, y2=y2)
             else:
-                x, y = TC.canonical_from_pitch_fraction(intent["ifx"], intent["ify"])
+                x, y = TC.canonical_from_pitch_fraction(e["ifx"], e["ify"])
                 self._create(session, controls, space, x=x, y=y)
-        elif action == "line" and space == "pitch":
-            x, y = TC.canonical_from_pitch_fraction(intent["ifx"], intent["ify"])
-            x2, y2 = TC.canonical_from_pitch_fraction(intent["ifx2"], intent["ify2"])
-            self._create(session, controls, space, x=x, y=y, x2=x2, y2=y2)
-        if action != "cancel":
+            seen.append(e["cid"]); seen_set.add(e["cid"]); changed = True
+        for o in batch["ops"]:
+            if o["aid"] in seen_set:
+                continue
+            act = o["action"]
+            if act == "select":
+                st.session_state[_SEL] = o.get("select")
+            elif act == "delete":
+                if o.get("select"):
+                    st.session_state[_SEL] = o["select"]
+                self._delete_selected(session)
+            elif act == "undo":
+                session.undo()
+            elif act == "redo":
+                session.redo()
+            elif act == "cancel":
+                st.session_state.pop(_SEL, None)
+            seen.append(o["aid"]); seen_set.add(o["aid"]); changed = True
+        del seen[:-5000]
+        ids = [e["cid"] for e in batch["events"]] + [o["aid"] for o in batch["ops"]]
+        if ids != st.session_state.get(_ACKED):
+            st.session_state[_ACKED] = ids
+            changed = True
+        if changed:
             self._autosave(shell, svc, session)
             st.rerun()
 
@@ -205,17 +264,21 @@ class TaggingStudioPage(Page):
     def _native_add(self, shell, svc, session, space, controls) -> None:
         tag = controls["tag"]
         is_line = bool(tag and tag.geometry == "line" and space == "pitch")
-        with st.expander("Add by coordinates (precise / no-mouse)", expanded=False):
-            fx = "goal_x" if space == "goal" else "x"
-            fy = "goal_y" if space == "goal" else "y"
+        L, W = float(session.pitch_length or 105.0), float(session.pitch_width or 68.0)
+        sx, sy = (TC.GOAL_WIDTH_M, TC.GOAL_HEIGHT_M) if space == "goal" else (L, W)
+        with st.expander("Add by coordinates in metres (precise / no-mouse)", expanded=False):
+            fx = "across goal (m)" if space == "goal" else f"x (m, 0–{L:g})"
+            fy = "height (m)" if space == "goal" else f"y (m, 0–{W:g})"
             a = st.columns(2)
-            xv = a[0].number_input(f"{fx} (0–100)", 0.0, 100.0, 50.0, key="tag_nx")
-            yv = a[1].number_input(f"{fy} (0–100)", 0.0, 100.0, 50.0, key="tag_ny")
+            xm = a[0].number_input(fx, 0.0, sx, sx / 2, 0.1, key=f"tag_nx_{space}")
+            ym = a[1].number_input(fy, 0.0, sy, sy / 2, 0.1, key=f"tag_ny_{space}")
+            xv, yv = TC.from_metres(xm, sx), TC.from_metres(ym, sy)
             x2v = y2v = None
             if is_line:
                 b = st.columns(2)
-                x2v = b[0].number_input("x2 (0–100)", 0.0, 100.0, 60.0, key="tag_nx2")
-                y2v = b[1].number_input("y2 (0–100)", 0.0, 100.0, 50.0, key="tag_ny2")
+                x2m = b[0].number_input(f"end x (m)", 0.0, L, min(L, L / 2 + 10), 0.1, key="tag_nx2")
+                y2m = b[1].number_input(f"end y (m)", 0.0, W, W / 2, 0.1, key="tag_ny2")
+                x2v, y2v = TC.from_metres(x2m, L), TC.from_metres(y2m, W)
             if st.button("Add event", type="primary", key="tag_native_add", use_container_width=True):
                 if space == "goal":
                     self._create(session, controls, space, goal_x=xv, goal_y=yv)
@@ -244,9 +307,13 @@ class TaggingStudioPage(Page):
             outcome = st.selectbox("Outcome", outs, index=idx, key=f"ed_out_{e.id}")
             coords = st.columns(4)
             vals: dict[str, Any] = {}
+            L, W = float(session.pitch_length or 105.0), float(session.pitch_width or 68.0)
+            size = {"x": L, "x2": L, "y": W, "y2": W, "goal_x": TC.GOAL_WIDTH_M, "goal_y": TC.GOAL_HEIGHT_M}
             for i, f in enumerate(tag.required_fields if tag else ()):
-                vals[f] = coords[i].number_input(f, 0.0, 100.0, float(getattr(e, f) or 0.0),
-                                                 key=f"ed_{f}_{e.id}")
+                sz = size.get(f, 100.0)
+                mv = coords[i].number_input(f"{f} (m)", 0.0, float(sz), float(TC.to_metres(getattr(e, f) or 0.0, sz)),
+                                            0.1, key=f"ed_{f}_{e.id}")
+                vals[f] = TC.from_metres(mv, sz)
             notes = st.text_input("Notes", value=e.notes, key=f"ed_notes_{e.id}")
             b = st.columns(2)
             if b[0].button("Update", type="primary", key=f"ed_upd_{e.id}", use_container_width=True):
@@ -271,12 +338,15 @@ class TaggingStudioPage(Page):
             st.caption("No events yet — tag on the canvas or add by coordinates.")
             return
         rows = []
+        L, W = float(session.pitch_length or 105.0), float(session.pitch_width or 68.0)
         for i, e in enumerate(session.events, 1):
             rows.append({"#": i, "id": e.id, "Time": self._clock(e), "Team": e.team,
                          "Player": e.player, "Event": e.event_type, "Out": e.outcome,
                          "Space": e.coordinate_space,
-                         "X": e.x, "Y": e.y, "X2": e.x2, "Y2": e.y2,
-                         "GoalX": e.goal_x, "GoalY": e.goal_y})
+                         "X (m)": TC.to_metres(e.x, L), "Y (m)": TC.to_metres(e.y, W),
+                         "X2 (m)": TC.to_metres(e.x2, L), "Y2 (m)": TC.to_metres(e.y2, W),
+                         "Goal across (m)": TC.to_metres(e.goal_x, TC.GOAL_WIDTH_M),
+                         "Goal height (m)": TC.to_metres(e.goal_y, TC.GOAL_HEIGHT_M)})
         ids = [r["id"] for r in rows]
         display = [{k: v for k, v in r.items() if k != "id"} for r in rows]
         try:
@@ -327,7 +397,7 @@ class TaggingStudioPage(Page):
             col.button("Export", disabled=True, use_container_width=True, key="tag_export_disabled",
                        help=f"{len(problems)} validation issue(s) — fix before export.")
             return
-        col.download_button("Export", data=session_to_csv(session),
+        col.download_button("Export", data=session_to_csv(session, metres=True),
                             file_name="tagging.csv", mime="text/csv",
                             use_container_width=True, key="tag_export_csv",
                             disabled=not session.events)

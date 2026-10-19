@@ -3,178 +3,305 @@
 <head>
 <meta charset="utf-8" />
 <style>
-  html, body { margin: 0; padding: 0; background: transparent;
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  #wrap { display: flex; flex-direction: column; gap: 6px; }
-  #stage { position: relative; border-radius: 12px; overflow: hidden; line-height: 0;
-    border: 1px solid rgba(0,0,0,.12); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
-  #stage:focus, #stage:focus-visible { outline: none; }
-  #bg { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
-  #svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-  #hud { display: flex; justify-content: space-between; align-items: center;
-    font-size: 12px; color: #6b7280; padding: 0 4px; min-height: 16px; }
-  #coord { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .hot { cursor: pointer; }
+  :root { --bg:#0e1218; --bar:#141922; --line:#2a3242; --ink:#e9edf3; --mut:#8e99ab; --on:#2f81f7; --gold:#ffd23f; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:transparent; font-family:"Segoe UI", Inter, system-ui, Arial, sans-serif;
+               -webkit-user-select:none; user-select:none; }
+  #app { background:var(--bg); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  #top { display:flex; align-items:center; gap:14px; padding:8px 12px; background:var(--bar); border-bottom:1px solid var(--line);
+         color:var(--ink); font-size:12.5px; flex-wrap:wrap; }
+  #ctx { display:flex; align-items:center; gap:8px; font-weight:700; }
+  #ctx i { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  #read { margin-left:auto; font-variant-numeric:tabular-nums; font-weight:700; color:var(--ink); }
+  #zone { color:var(--mut); font-weight:600; }
+  #stage { position:relative; padding:10px; display:grid; place-items:center; background:#0a0d12; }
+  #cv { display:block; touch-action:none; cursor:none; border-radius:8px; max-width:100%; }
+  #foot { display:flex; justify-content:space-between; gap:10px; padding:7px 12px; background:var(--bar); border-top:1px solid var(--line);
+          color:var(--mut); font-size:11.5px; }
+  #sync b { color:var(--ink); }
+  .kbd { display:inline-block; border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 4px; color:var(--ink); font-size:10.5px; }
 </style>
 </head>
 <body>
-<div id="wrap">
-  <div id="stage" tabindex="0">
-    <img id="bg" draggable="false" />
-    <svg id="svg" preserveAspectRatio="none"></svg>
-  </div>
-  <div id="hud"><span id="coord">X: —  Y: —</span><span id="hint"></span></div>
+<div id="app">
+  <div id="top"><span id="ctx"><i></i><span></span></span><span id="zone"></span><span id="read">—</span></div>
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <div id="foot"><span id="hint"></span><span id="sync"></span></div>
 </div>
 <script>
 (function () {
-  function send(type, extra) {
-    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, extra || {}), "*");
-  }
-  function ready() { send("streamlit:componentReady", { apiVersion: 1 }); }
-  function setHeight() { send("streamlit:setFrameHeight", { height: document.body.scrollHeight + 2 }); }
+"use strict";
+// ---------------------------------------------------------------- Streamlit bridge
+function send(t, x) { window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: t }, x || {}), "*"); }
+function setHeight() { send("streamlit:setFrameHeight", { height: document.getElementById("app").offsetHeight + 4 }); }
+var TOKEN = Math.random().toString(36).slice(2, 10), seq = 0, sendSeq = 0;
 
-  var _ts = 0;
-  function nextTs() { _ts += 1; return _ts; }
-  function emit(payload) {
-    payload.ts = nextTs();
-    send("streamlit:setComponentValue", { dataType: "json", value: payload });
-  }
+// ---------------------------------------------------------------- state
+var A = { space: "pitch", dims: { length: 105, width: 68 }, mode: "point", overlay: [], acked: [], toggles: {},
+          ctx: {}, editable: true, colors: {} };
+var queue = [];          // events created here, not yet confirmed by Python  {cid, action, ifx, ify, ifx2, ify2, ctx}
+var ops = [];            // select / delete / undo / redo intents, not yet confirmed  {aid, action, select}
+var selected = null;     // selected event id (local echo)
+var cv = document.getElementById("cv"), ctx = cv.getContext("2d"), dpr = Math.max(1, window.devicePixelRatio || 1);
+var base = document.createElement("canvas"), bctx = base.getContext("2d");
+var W = 800, H = 520, ppm = 7, ox = 0, oy = 0;   // canvas css size, px per metre, origin (px) of the playing area
+var GOAL_W = 7.32, GOAL_H = 2.44;
+var cursor = null, down = null, lineStart = null, hover = null;
 
-  var stage = document.getElementById("stage");
-  var bg = document.getElementById("bg");
-  var svg = document.getElementById("svg");
-  var coordEl = document.getElementById("coord");
-  var hintEl = document.getElementById("hint");
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function dims() { return A.space === "goal" ? { L: GOAL_W, Wd: GOAL_H } : { L: A.dims.length, Wd: A.dims.width }; }
+function margin() { return A.space === "goal" ? { x: 1.6, top: 0.9, bottom: 0.6 } : { x: 3, top: 3, bottom: 3 }; }
 
-  var STATE = { image: "", overlay: [], mode: "point", bbox: { left:0, right:1, top:0, bottom:1 },
-                colors: {}, editable: true, nonce: "" };
-  var pending = null;   // {ifx, ify} start of a line
+// interior fraction (ifx 0..1 left→right, ify 0..1 top→bottom) <-> canvas px
+function toPx(ifx, ify) { var d = dims(); return [ox + ifx * d.L * ppm, oy + ify * d.Wd * ppm]; }
+function toFrac(px, py) { var d = dims(); return [(px - ox) / (d.L * ppm), (py - oy) / (d.Wd * ppm)]; }
+function metres(ifx, ify) { var d = dims(); return [ifx * d.L, (1 - ify) * d.Wd]; }
 
-  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-
-  // image fraction -> interior fraction (0..1 within the pitch/goal interior)
-  function toInterior(fx, fy) {
-    var b = STATE.bbox;
-    var w = (b.right - b.left) || 1, h = (b.bottom - b.top) || 1;
-    return { ifx: clamp01((fx - b.left) / w), ify: clamp01((fy - b.top) / h) };
-  }
-  // interior fraction -> image fraction (for drawing markers)
-  function toImage(ifx, ify) {
-    var b = STATE.bbox;
-    return { fx: b.left + ifx * (b.right - b.left), fy: b.top + ify * (b.bottom - b.top) };
-  }
-  function canonical(ifx, ify) { return { x: ifx * 100, y: (1 - ify) * 100 }; }
-
-  function eventFraction(ev) {
-    var r = bg.getBoundingClientRect();
-    return { fx: clamp01((ev.clientX - r.left) / (r.width || 1)),
-             fy: clamp01((ev.clientY - r.top) / (r.height || 1)) };
-  }
-
-  function nearestMarker(ifx, ify) {
-    var best = null, bestD = 0.045 * 0.045;   // selection radius in interior-fraction units
-    for (var i = 0; i < STATE.overlay.length; i++) {
-      var m = STATE.overlay[i];
-      var pts = [[m.ifx, m.ify]];
-      if (m.ifx2 != null) pts.push([m.ifx2, m.ify2]);
-      for (var j = 0; j < pts.length; j++) {
-        var dx = pts[j][0] - ifx, dy = pts[j][1] - ify, d = dx * dx + dy * dy;
-        if (d < bestD) { bestD = d; best = m.id; }
-      }
-    }
-    return best;
-  }
-
-  function svgXY(ifx, ify) {
-    var im = toImage(ifx, ify);
-    return { x: im.fx * 1000, y: im.fy * 1000 };   // viewBox 0..1000
-  }
-
-  function draw(cursor) {
-    var parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%">'];
-    var save = STATE.colors.save || "#6D28D9", goal = STATE.colors.goal || "#D64045";
-    var faded = "rgba(0,0,0,.0)";
-    STATE.overlay.forEach(function (m) {
-      var col = m.kind === "goal" ? goal : save;
-      var fill = m.kind === "goal" ? goal : "rgba(255,255,255,.65)";
-      var a = svgXY(m.ifx, m.ify);
-      if (m.ifx2 != null) {
-        var b = svgXY(m.ifx2, m.ify2);
-        parts.push('<line x1="'+a.x+'" y1="'+a.y+'" x2="'+b.x+'" y2="'+b.y+'" stroke="'+col+'" stroke-width="'+(m.selected?6:4)+'" opacity="0.9"/>');
-        parts.push('<circle cx="'+b.x+'" cy="'+b.y+'" r="'+(m.selected?11:8)+'" fill="'+col+'" opacity="0.9"/>');
-      }
-      var r = (m.selected ? 15 : 11);
-      parts.push('<circle class="hot" cx="'+a.x+'" cy="'+a.y+'" r="'+r+'" fill="'+fill+'" stroke="'+col+'" stroke-width="'+(m.selected?5:3.5)+'"/>');
-      if (m.selected)
-        parts.push('<circle cx="'+a.x+'" cy="'+a.y+'" r="'+(r+7)+'" fill="none" stroke="'+col+'" stroke-width="1.5" stroke-dasharray="4 4"/>');
-    });
-    if (pending && cursor) {
-      var p = svgXY(pending.ifx, pending.ify), c = svgXY(cursor.ifx, cursor.ify);
-      parts.push('<line x1="'+p.x+'" y1="'+p.y+'" x2="'+c.x+'" y2="'+c.y+'" stroke="'+save+'" stroke-width="4" stroke-dasharray="8 6" opacity="0.8"/>');
-      parts.push('<circle cx="'+p.x+'" cy="'+p.y+'" r="9" fill="'+save+'"/>');
-    }
-    parts.push('</svg>');
-    svg.outerHTML = parts.join("");
-    svg = document.getElementById("svg") || document.querySelector("#stage svg");
-    svg.id = "svg";
-  }
-
-  function onMove(ev) {
-    var f = eventFraction(ev), it = toInterior(f.fx, f.fy);
-    var c = canonical(it.ifx, it.ify);
-    coordEl.textContent = "X: " + c.x.toFixed(1) + "   Y: " + c.y.toFixed(1);
-    if (pending) draw(it);
-  }
-
-  function onClick(ev) {
-    if (!STATE.editable) return;
-    stage.focus();
-    var f = eventFraction(ev), it = toInterior(f.fx, f.fy);
-    // selection takes priority (unless finishing a line)
-    if (!pending) {
-      var hit = nearestMarker(it.ifx, it.ify);
-      if (hit) { emit({ action: "select", select: hit }); return; }
-    }
-    if (STATE.mode === "line") {
-      if (!pending) { pending = it; draw(it); }
-      else { emit({ action: "line", ifx: pending.ifx, ify: pending.ify, ifx2: it.ifx, ify2: it.ify }); pending = null; }
-    } else {
-      emit({ action: "point", ifx: it.ifx, ify: it.ify });
-    }
-  }
-
-  function onKey(ev) {
-    if (ev.key === "Escape") { if (pending) { pending = null; draw(null); } emit({ action: "cancel" }); }
-    else if (ev.key === "Delete" || ev.key === "Backspace") { ev.preventDefault(); emit({ action: "delete" }); }
-  }
-
-  stage.addEventListener("mousemove", onMove);
-  stage.addEventListener("click", onClick);
-  window.addEventListener("keydown", onKey);
-
-  function apply(args) {
-    if (!args) return;
-    STATE.image = args.image || "";
-    STATE.overlay = Array.isArray(args.overlay) ? args.overlay : [];
-    STATE.mode = args.mode || "point";
-    STATE.bbox = args.readout && args.readout.bbox ? args.readout.bbox : STATE.bbox;
-    STATE.colors = args.colors || {};
-    STATE.editable = args.editable !== false;
-    if (args.nonce !== STATE.nonce) { pending = null; STATE.nonce = args.nonce; }
-    hintEl.textContent = STATE.mode === "line" ? "Click start, then end · Esc cancels" :
-                         "Click to tag · click a marker to select · Delete removes";
-    if (bg.getAttribute("src") !== STATE.image) bg.setAttribute("src", STATE.image);
-    draw(null);
-    setHeight();
-  }
-
-  window.addEventListener("message", function (ev) {
-    var d = ev.data || {};
-    if (d.type === "streamlit:render") { apply(d.args); }
+// ---------------------------------------------------------------- layout & base drawing
+function layout() {
+  var d = dims(), m = margin();
+  var avail = Math.max(320, document.getElementById("stage").clientWidth - 20);
+  var totalW = d.L + 2 * m.x, totalH = d.Wd + m.top + m.bottom;
+  W = avail; ppm = W / totalW; H = totalH * ppm;
+  var maxH = A.space === "goal" ? 420 : 640;
+  if (H > maxH) { H = maxH; ppm = H / totalH; W = totalW * ppm; }
+  ox = m.x * ppm; oy = m.top * ppm;
+  [cv, base].forEach(function (c) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); });
+  cv.style.width = W + "px"; cv.style.height = H + "px";
+  bctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (A.space === "goal") drawGoalBase(); else drawPitchBase();
+}
+function line(c, pts) { c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for (var i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke(); }
+function M(x, y) { return [ox + x * ppm, oy + (A.dims.width - y) * ppm]; }      // metres (y up) -> px
+function drawPitchBase() {
+  var c = bctx, L = A.dims.length, Wd = A.dims.width, T = A.toggles || {};
+  c.fillStyle = "#2f6a3a"; c.fillRect(0, 0, W, H);
+  var n = 18;
+  for (var i = 0; i < n; i++) { c.fillStyle = i % 2 ? "#367e41" : "#3b8746"; var a = M(L * i / n, Wd), b = M(L * (i + 1) / n, 0); c.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]); }
+  c.strokeStyle = "rgba(255,255,255,.92)"; c.lineWidth = Math.max(1.3, ppm * 0.12); c.lineJoin = "round";
+  line(c, [M(0, 0), M(L, 0), M(L, Wd), M(0, Wd), M(0, 0)]); line(c, [M(L / 2, 0), M(L / 2, Wd)]);
+  var cc = M(L / 2, Wd / 2); c.beginPath(); c.arc(cc[0], cc[1], 9.15 * ppm, 0, 7); c.stroke();
+  c.fillStyle = "#fff"; c.beginPath(); c.arc(cc[0], cc[1], Math.max(2, ppm * 0.25), 0, 7); c.fill();
+  [[0, 1], [L, -1]].forEach(function (g) {
+    var gx = g[0], s = g[1], bw = Math.min(40.32, Wd - 4) / 2, sw = Math.min(18.32, Wd - 8) / 2;
+    line(c, [M(gx, Wd / 2 - bw), M(gx + s * 16.5, Wd / 2 - bw), M(gx + s * 16.5, Wd / 2 + bw), M(gx, Wd / 2 + bw)]);
+    line(c, [M(gx, Wd / 2 - sw), M(gx + s * 5.5, Wd / 2 - sw), M(gx + s * 5.5, Wd / 2 + sw), M(gx, Wd / 2 + sw)]);
+    line(c, [M(gx, Wd / 2 - 3.66), M(gx - s * 1.6, Wd / 2 - 3.66), M(gx - s * 1.6, Wd / 2 + 3.66), M(gx, Wd / 2 + 3.66)]);
+    var p = M(gx + s * 11, Wd / 2); c.beginPath(); c.arc(p[0], p[1], Math.max(2, ppm * 0.25), 0, 7); c.fill();
+    var ang = Math.acos(5.5 / 9.15); c.beginPath();
+    if (s === 1) c.arc(p[0], p[1], 9.15 * ppm, -ang, ang); else c.arc(p[0], p[1], 9.15 * ppm, Math.PI - ang, Math.PI + ang); c.stroke();
   });
-  bg.addEventListener("load", setHeight);
-  ready();
-  setHeight();
+  c.save(); c.setLineDash([5, 5]); c.lineWidth = 1; c.strokeStyle = "rgba(255,255,255,.45)";
+  if (T.thirds) { [L / 3, 2 * L / 3].forEach(function (x) { line(c, [M(x, 0), M(x, Wd)]); }); }
+  if (T.channels) { [Wd / 2 - 20.16, Wd / 2 - 9.16, Wd / 2 + 9.16, Wd / 2 + 20.16].forEach(function (y) { line(c, [M(0, y), M(L, y)]); }); }
+  if (T.grid) { c.strokeStyle = "rgba(255,255,255,.22)"; for (var gx = 10; gx < L; gx += 10) line(c, [M(gx, 0), M(gx, Wd)]); for (var gy = 10; gy < Wd; gy += 10) line(c, [M(0, gy), M(L, gy)]); }
+  c.restore();
+  // attack direction
+  c.fillStyle = "rgba(255,255,255,.75)"; c.font = "700 " + Math.max(10, ppm * 1.4) + "px Segoe UI, Arial"; c.textAlign = "center";
+  var dir = A.ctx.attack === "rl" ? "◀  ATTACK" : "ATTACK  ▶"; var ap = M(L / 2, -1.6); c.fillText(dir, ap[0], ap[1] + 4);
+}
+function drawGoalBase() {
+  var c = bctx;
+  c.fillStyle = "#e9eef3"; c.fillRect(0, 0, W, H);
+  var g0 = toPx(0, 1), g1 = toPx(1, 0);
+  c.fillStyle = "#7fb069"; c.fillRect(0, g0[1], W, H - g0[1]);                      // ground
+  c.save(); c.strokeStyle = "rgba(60,70,80,.18)"; c.lineWidth = 1;                    // net
+  var step = 0.25 * ppm; for (var x = g0[0]; x <= g1[0]; x += step) line(c, [[x, g1[1]], [x, g0[1]]]);
+  for (var y = g1[1]; y <= g0[1]; y += step) line(c, [[g0[0], y], [g1[0], y]]); c.restore();
+  if ((A.toggles || {}).zones !== false) { c.save(); c.setLineDash([6, 5]); c.strokeStyle = "rgba(30,40,55,.35)"; c.lineWidth = 1.2;
+    [1 / 3, 2 / 3].forEach(function (f) { var a = toPx(f, 0), b = toPx(f, 1); line(c, [a, b]); var e = toPx(0, f), h = toPx(1, f); line(c, [e, h]); }); c.restore(); }
+  c.strokeStyle = "#ffffff"; c.lineWidth = Math.max(5, ppm * 0.12); c.lineCap = "square";
+  c.shadowColor = "rgba(0,0,0,.35)"; c.shadowBlur = 6;
+  line(c, [[g0[0], g0[1]], [g0[0], g1[1]], [g1[0], g1[1]], [g1[0], g0[1]]]); c.shadowBlur = 0;
+}
+
+// ---------------------------------------------------------------- frame drawing
+function marker(m, pending) {
+  var p = toPx(m.ifx, m.ify), col = m.color || "#1f6feb", sel = (m.id && m.id === selected) || m.selected && !selected;
+  var r = A.space === "goal" ? 9 : 7;
+  if (m.ifx2 != null) {
+    var q = toPx(m.ifx2, m.ify2);
+    ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = sel ? 3.5 : 2.4; if (pending) ctx.setLineDash([6, 4]);
+    line(ctx, [p, q]); ctx.setLineDash([]);
+    var ang = Math.atan2(q[1] - p[1], q[0] - p[0]), hs = 10; ctx.fillStyle = col; ctx.beginPath();
+    ctx.moveTo(q[0], q[1]); ctx.lineTo(q[0] - hs * Math.cos(ang - 0.42), q[1] - hs * Math.sin(ang - 0.42));
+    ctx.lineTo(q[0] - hs * Math.cos(ang + 0.42), q[1] - hs * Math.sin(ang + 0.42)); ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+  ctx.save();
+  ctx.fillStyle = pending ? "rgba(255,255,255,.85)" : col; ctx.strokeStyle = pending ? col : "#ffffff"; ctx.lineWidth = 2;
+  if (pending) ctx.setLineDash([3, 2]);
+  ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 7); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+  if (sel) { ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(p[0], p[1], r + 6, 0, 7); ctx.stroke(); }
+  ctx.restore();
+}
+function draw() {
+  ctx.clearRect(0, 0, W, H); ctx.drawImage(base, 0, 0, W, H);
+  A.overlay.forEach(function (m) { marker(m, false); });
+  queue.forEach(function (q) { marker({ ifx: q.ifx, ify: q.ify, ifx2: q.ifx2, ify2: q.ify2, color: (q.ctx || {}).color }, true); });
+  if (lineStart && cursor) { ctx.save(); ctx.strokeStyle = A.ctx.color || "#ffd23f"; ctx.lineWidth = 2.5; ctx.setLineDash([7, 5]);
+    line(ctx, [toPx(lineStart[0], lineStart[1]), [cursor.x, cursor.y]]); ctx.restore(); marker({ ifx: lineStart[0], ify: lineStart[1], color: A.ctx.color }, true); }
+  if (hover) { var m = hover, p = toPx(m.ifx, m.ify); if (m.label) tooltip(m.label, p[0], p[1] - 16); }
+  if (cursor && cursor.inside) crosshair(cursor);
+}
+function tooltip(t, x, y) {
+  ctx.save(); ctx.font = "600 12px Segoe UI, Arial"; var w = ctx.measureText(t).width + 14;
+  var tx = Math.min(Math.max(x - w / 2, 4), W - w - 4), ty = Math.max(y - 24, 4);
+  ctx.fillStyle = "rgba(10,14,20,.92)"; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(tx, ty, w, 22, 6) : ctx.rect(tx, ty, w, 22); ctx.fill();
+  ctx.fillStyle = "#fff"; ctx.textBaseline = "middle"; ctx.fillText(t, tx + 7, ty + 11); ctx.restore();
+}
+function crosshair(c) {
+  // magnifier (×3) so the exact spot can be placed precisely
+  var R = 52, Z = 3, mx = c.x + 70 > W ? c.x - 70 : c.x + 70, my = c.y - 70 < 0 ? c.y + 70 : c.y - 70;
+  ctx.save(); ctx.beginPath(); ctx.arc(mx, my, R, 0, 7); ctx.closePath(); ctx.clip();
+  var sw = (2 * R) / Z; ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(cv, (c.x - sw / 2) * dpr, (c.y - sw / 2) * dpr, sw * dpr, sw * dpr, mx - R, my - R, 2 * R, 2 * R);
+  ctx.restore();
+  ctx.save(); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(mx, my, R, 0, 7); ctx.stroke();
+  ctx.strokeStyle = "rgba(255,210,63,.95)"; ctx.lineWidth = 1; line(ctx, [[mx - 10, my], [mx + 10, my]]); line(ctx, [[mx, my - 10], [mx, my + 10]]);
+  // crosshair on the pitch
+  ctx.strokeStyle = "rgba(255,255,255,.55)"; ctx.setLineDash([4, 4]);
+  var a = toPx(0, 0), b = toPx(1, 1);
+  line(ctx, [[c.x, a[1]], [c.x, b[1]]]); line(ctx, [[a[0], c.y], [b[0], c.y]]); ctx.setLineDash([]);
+  ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(c.x, c.y, 5, 0, 7); ctx.stroke();
+  line(ctx, [[c.x - 11, c.y], [c.x - 6, c.y]]); line(ctx, [[c.x + 6, c.y], [c.x + 11, c.y]]);
+  line(ctx, [[c.x, c.y - 11], [c.x, c.y - 6]]); line(ctx, [[c.x, c.y + 6], [c.x, c.y + 11]]);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- readout
+function zoneName(ifx, ify) {
+  if (A.space === "goal") {
+    var col = ["Left", "Centre", "Right"][Math.min(2, Math.floor(ifx * 3))], row = ["Top", "Middle", "Low"][Math.min(2, Math.floor(ify * 3))];
+    return row + " " + col.toLowerCase();
+  }
+  var L = A.dims.length, Wd = A.dims.width, m = metres(ifx, ify), x = A.ctx.attack === "rl" ? L - m[0] : m[0];
+  var y = A.ctx.attack === "rl" ? Wd - m[1] : m[1];
+  var third = x < L / 3 ? "Defensive third" : x < 2 * L / 3 ? "Middle third" : "Final third";
+  var e = [Wd / 2 - 20.16, Wd / 2 - 9.16, Wd / 2 + 9.16, Wd / 2 + 20.16];
+  var ch = y < e[0] ? "right flank" : y < e[1] ? "right half-space" : y < e[2] ? "centre" : y < e[3] ? "left half-space" : "left flank";
+  var box = (x >= L - 16.5 && Math.abs(y - Wd / 2) <= 20.16) ? " · in the box" : "";
+  return third + " · " + ch + box;
+}
+function readout(f) {
+  var el = document.getElementById("read"), z = document.getElementById("zone");
+  if (!f) { el.textContent = "—"; z.textContent = ""; return; }
+  var m = metres(f[0], f[1]);
+  el.textContent = A.space === "goal" ? ("across " + m[0].toFixed(2) + " m · height " + m[1].toFixed(2) + " m")
+                                      : ("x " + m[0].toFixed(1) + " m · y " + m[1].toFixed(1) + " m");
+  z.textContent = zoneName(f[0], f[1]);
+}
+function ctxBar() {
+  var c = document.getElementById("ctx"); c.querySelector("i").style.background = A.ctx.color || "#1f6feb";
+  c.querySelector("span").textContent = A.ctx.label || "";
+  document.getElementById("hint").innerHTML = (A.mode === "line" ? "Drag start → end (or click start, then end)" : "Click to tag") +
+    " · click a marker to select · <span class='kbd'>Del</span> delete · <span class='kbd'>Esc</span> cancel · <span class='kbd'>Ctrl Z</span> undo";
+}
+function syncText() {
+  var s = document.getElementById("sync"), n = queue.length + ops.length;
+  s.innerHTML = n ? ("Saving <b>" + n + "</b>…") : ("<b>" + A.overlay.length + "</b> on this layer · saved");
+}
+
+// ---------------------------------------------------------------- python sync (batched, idempotent)
+var flushT = null;
+function flush() {
+  clearTimeout(flushT);
+  flushT = setTimeout(function () {
+    sendSeq += 1;
+    send("streamlit:setComponentValue", { dataType: "json",
+      value: { kind: "batch", token: TOKEN, seq: sendSeq, events: queue.slice(), ops: ops.slice() } });
+  }, 120);
+  syncText();
+}
+function addEvent(e) { seq += 1; e.cid = TOKEN + "-" + seq; e.ctx = A.ctx.key ? { key: A.ctx.key } : {}; e.ctx.color = A.ctx.color; queue.push(e); flush(); draw(); }
+function addOp(o) { seq += 1; o.aid = TOKEN + "-op" + seq; ops.push(o); flush(); }
+
+// ---------------------------------------------------------------- pointer
+function evPos(ev) {          // css px of the DRAWN canvas, whatever size the browser displays it at
+  var r = cv.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) * (W / (r.width || W)), y: (ev.clientY - r.top) * (H / (r.height || H)) };
+}
+function inside(f) { return f[0] >= -0.001 && f[0] <= 1.001 && f[1] >= -0.001 && f[1] <= 1.001; }
+function hitMarker(px, py) {
+  var best = null, bd = 12 * 12;
+  A.overlay.forEach(function (m) {
+    [[m.ifx, m.ify], m.ifx2 != null ? [m.ifx2, m.ify2] : null].forEach(function (pt) {
+      if (!pt) return; var p = toPx(pt[0], pt[1]), d = (p[0] - px) * (p[0] - px) + (p[1] - py) * (p[1] - py);
+      if (d < bd) { bd = d; best = m; }
+    });
+  });
+  return best;
+}
+cv.addEventListener("pointermove", function (ev) {
+  var p = evPos(ev), f = toFrac(p.x, p.y);
+  cursor = { x: p.x, y: p.y, inside: inside(f) };
+  hover = cursor.inside ? hitMarker(p.x, p.y) : null;
+  cv.style.cursor = hover ? "pointer" : (cursor.inside ? "none" : "default");
+  readout(cursor.inside ? [clamp01(f[0]), clamp01(f[1])] : null);
+  draw();
+});
+cv.addEventListener("pointerleave", function () { cursor = null; hover = null; readout(null); draw(); });
+cv.addEventListener("pointerdown", function (ev) {
+  if (!A.editable || ev.button !== 0) return;
+  cv.setPointerCapture(ev.pointerId);
+  var p = evPos(ev); down = { x: p.x, y: p.y };
+});
+cv.addEventListener("pointerup", function (ev) {
+  if (!A.editable || !down) return;
+  var p = evPos(ev), d0 = down; down = null;
+  var f0 = toFrac(d0.x, d0.y), f1 = toFrac(p.x, p.y);
+  var moved = Math.hypot(p.x - d0.x, p.y - d0.y) > 6;
+  if (!moved && !lineStart) {
+    var hit = hitMarker(p.x, p.y);
+    if (hit) { selected = hit.id; addOp({ action: "select", select: hit.id }); draw(); return; }
+  }
+  if (!inside(f0)) return;
+  f0 = [clamp01(f0[0]), clamp01(f0[1])]; f1 = [clamp01(f1[0]), clamp01(f1[1])];
+  if (A.mode === "line") {
+    if (moved) { addEvent({ action: "line", ifx: f0[0], ify: f0[1], ifx2: f1[0], ify2: f1[1] }); lineStart = null; }
+    else if (lineStart) { addEvent({ action: "line", ifx: lineStart[0], ify: lineStart[1], ifx2: f1[0], ify2: f1[1] }); lineStart = null; }
+    else { lineStart = f0; draw(); }
+  } else {
+    addEvent({ action: "point", ifx: f1[0], ify: f1[1] });
+  }
+});
+cv.addEventListener("contextmenu", function (ev) { ev.preventDefault(); lineStart = null; draw(); });
+window.addEventListener("keydown", function (ev) {
+  var tag = (ev.target && ev.target.tagName) || ""; if (tag === "INPUT" || tag === "TEXTAREA") return;
+  if (ev.key === "Escape") { lineStart = null; selected = null; addOp({ action: "cancel" }); draw(); }
+  else if ((ev.key === "Delete" || ev.key === "Backspace") && selected) { ev.preventDefault(); addOp({ action: "delete", select: selected }); }
+  else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z") { ev.preventDefault(); addOp({ action: ev.shiftKey ? "redo" : "undo" }); }
+  else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "y") { ev.preventDefault(); addOp({ action: "redo" }); }
+});
+
+// ---------------------------------------------------------------- render from Python
+var lastLayoutKey = "";
+window.addEventListener("message", function (ev) {
+  var d = ev.data || {}; if (d.type !== "streamlit:render") return;
+  var a = d.args || {};
+  var prevSpace = A.space;
+  A.space = a.space === "goal" ? "goal" : "pitch";
+  A.dims = a.dims || A.dims; A.mode = a.mode || "point"; A.overlay = Array.isArray(a.overlay) ? a.overlay : [];
+  A.toggles = a.toggles || {}; A.ctx = a.ctx || {}; A.editable = a.editable !== false;
+  var acked = {}; (a.acked || []).forEach(function (k) { acked[k] = 1; });
+  var before = queue.length + ops.length;
+  queue = queue.filter(function (q) { return !acked[q.cid]; });
+  ops = ops.filter(function (o) { return !acked[o.aid]; });
+  if (a.selected !== undefined) selected = a.selected || null;
+  if (prevSpace !== A.space) lineStart = null;
+  lastW = document.getElementById("stage").clientWidth;
+  var key = [A.space, A.dims.length, A.dims.width, JSON.stringify(A.toggles), A.ctx.attack, lastW].join("|");
+  if (key !== lastLayoutKey) { lastLayoutKey = key; layout(); }
+  ctxBar(); syncText(); draw(); setHeight();
+  if (before && (queue.length || ops.length)) flush();      // anything still unconfirmed is re-sent
+});
+var lastW = 0;
+function relayoutIfWidthChanged() {
+  var w = document.getElementById("stage").clientWidth;
+  if (Math.abs(w - lastW) > 1) { lastW = w; lastLayoutKey = ""; layout(); draw(); setHeight(); }
+}
+window.addEventListener("resize", relayoutIfWidthChanged);
+if (window.ResizeObserver) new ResizeObserver(relayoutIfWidthChanged).observe(document.getElementById("stage"));
+send("streamlit:componentReady", { apiVersion: 1 });
 })();
 </script>
 </body>

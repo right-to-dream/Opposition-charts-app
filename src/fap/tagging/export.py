@@ -31,6 +31,10 @@ CSV_COLUMNS: tuple[str, ...] = (
     "event_type", "tag_type", "outcome", "shot_result", "coordinate_space",
     "x", "y", "end_x", "end_y", "goal_x", "goal_y", "notes",
 )
+# Metre columns (on the session's pitch, default 105 x 68) — in the analyst's download, NOT in the
+# Open-Play / Data Hub import (which stays on the canonical 0..100 schema above).
+METRE_COLUMNS: tuple[str, ...] = ("x_m", "y_m", "end_x_m", "end_y_m", "goal_x_m", "goal_y_m",
+                                  "pitch_length", "pitch_width")
 
 _PERIOD_NUM = {"1H": 1, "2H": 2, "ET1": 3, "ET2": 4, "Unknown": 1, "": 1}
 
@@ -63,6 +67,8 @@ def _canonical_row(session: TaggingSession, e: Any) -> dict[str, Any]:
         "outcome": e.outcome, "shot_result": "", "coordinate_space": e.coordinate_space,
         "x": "", "y": "", "end_x": "", "end_y": "",
         "goal_x": _cell(e.goal_x), "goal_y": _cell(e.goal_y), "notes": e.notes,
+        "x_m": "", "y_m": "", "end_x_m": "", "end_y_m": "", "goal_x_m": "", "goal_y_m": "",
+        "pitch_length": "", "pitch_width": "",
     }
     if e.coordinate_space == "goal":
         # emit as a shot so A.shots / the Goal Mouth Map consume it; the across-goal
@@ -78,19 +84,34 @@ def _canonical_row(session: TaggingSession, e: Any) -> dict[str, Any]:
             row["end_x"], row["end_y"] = _cell(e.x2), _cell(e.y2)
         if e.event_type == "shot":
             row["shot_result"] = e.outcome
+    from fap.tagging import coordinates as TC
+    L, W = float(session.pitch_length or 105.0), float(session.pitch_width or 68.0)
+    row["pitch_length"], row["pitch_width"] = L, W
+    if e.coordinate_space == "goal":
+        row["goal_x_m"] = _cell(TC.to_metres(e.goal_x, TC.GOAL_WIDTH_M))
+        row["goal_y_m"] = _cell(TC.to_metres(e.goal_y, TC.GOAL_HEIGHT_M))
+    else:
+        row["x_m"], row["y_m"] = _cell(TC.to_metres(e.x, L)), _cell(TC.to_metres(e.y, W))
+        if tag is not None and tag.geometry == "line":
+            row["end_x_m"], row["end_y_m"] = _cell(TC.to_metres(e.x2, L)), _cell(TC.to_metres(e.y2, W))
     return row
 
 
-def session_to_rows(session: TaggingSession) -> list[dict[str, Any]]:
-    return [_canonical_row(session, e) for e in session.events]
+def session_to_rows(session: TaggingSession, *, metres: bool = False) -> list[dict[str, Any]]:
+    rows = [_canonical_row(session, e) for e in session.events]
+    if not metres:
+        rows = [{k: v for k, v in r.items() if k not in METRE_COLUMNS} for r in rows]
+    return rows
 
 
-def session_to_csv(session: TaggingSession) -> str:
+def session_to_csv(session: TaggingSession, *, metres: bool = False) -> str:
+    """The canonical CSV; ``metres=True`` appends the metre columns (analyst download)."""
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=list(CSV_COLUMNS), extrasaction="ignore",
+    cols = list(CSV_COLUMNS) + (list(METRE_COLUMNS) if metres else [])
+    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore",
                             lineterminator="\n")
     writer.writeheader()
-    writer.writerows(session_to_rows(session))
+    writer.writerows(session_to_rows(session, metres=metres))
     return buf.getvalue()
 
 

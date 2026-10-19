@@ -123,7 +123,7 @@ class History:
 
 
 _META_FIELDS = ("match_id", "competition", "match_date", "opponent", "analyst",
-                "home_team", "away_team", "attack_direction", "preset")
+                "home_team", "away_team", "attack_direction", "preset", "pitch_length", "pitch_width")
 
 
 @dataclass(slots=True)
@@ -138,6 +138,8 @@ class TaggingSession:
     away_team: str = "Team B"
     attack_direction: str = "lr"              # lr = left->right, rl = right->left
     preset: str = "All"
+    pitch_length: float = 105.0               # metres — canonical 0..100 maps onto these
+    pitch_width: float = 68.0
     _history: History = field(default_factory=History, repr=False)
 
     # -- snapshot state (events + metadata; history is separate) ---------------

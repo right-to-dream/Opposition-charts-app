@@ -93,6 +93,23 @@
         "false"
       ],
       "port": 8525
+    },
+    {
+      "name": "tag",
+      "runtimeExecutable": "C:\\Users\\Essam\\OneDrive\\Desktop\\python\\pythonw.exe",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "C:\\Users\\Essam\\AppData\\Local\\Temp\\claude\\C--Users-Essam-OneDrive-Desktop-Github-Opposition-charts-app\\952493cb-6a5c-44b4-b4ec-d1a30bee41a5\\scratchpad\\tag_harness.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8526",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
+      "port": 8526
     }
   ]
 }

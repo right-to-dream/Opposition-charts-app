@@ -53,3 +53,18 @@ def canonical_from_goal_fraction(fx: float, fy: float) -> tuple[float, float]:
 def goal_fraction_from_canonical(goal_x: float, goal_y: float) -> tuple[float, float]:
     """Inverse of :func:`canonical_from_goal_fraction`."""
     return clamp(goal_x) / 100.0, 1.0 - clamp(goal_y) / 100.0
+
+
+# ------------------------------------------------------------------ metres
+GOAL_WIDTH_M = 7.32
+GOAL_HEIGHT_M = 2.44
+
+
+def to_metres(value: float | None, size: float) -> float | None:
+    """Canonical 0..100 → metres on a dimension of ``size`` metres (pitch length / width, goal width / height)."""
+    return None if value is None else round(clamp(value) / 100.0 * float(size), 2)
+
+
+def from_metres(metres: float, size: float) -> float:
+    """Metres on a dimension of ``size`` → canonical 0..100."""
+    return _round(float(metres) / float(size) * 100.0) if size else 0.0
