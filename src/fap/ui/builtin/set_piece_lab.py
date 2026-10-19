@@ -184,6 +184,11 @@ class SetPieceLabPage(Page):
                 sd._spl_sig = sig
             except Exception as exc:
                 C.render_alert(f"Could not read this file: {exc}", "danger")
+        if sd is not None:
+            C.render_alert(f"Analysed team: {sd.team} — every chart and map is from {sd.team}'s point of view. "
+                           f"Attacking = {sd.team} taking the set piece · Defending = the opponent's set pieces "
+                           f"against {sd.team} · “won” = {sd.team} won it, “Opponent won” = whichever team {sd.team} "
+                           "played. Change the name in “Team in the file” if it is read wrongly.", "info")
         tabs = st.tabs(["Overview", "By type", "Explorer", "Designer", "Library", "Data"])
         with tabs[1]:
             self._by_type(sd) if sd else self._empty()

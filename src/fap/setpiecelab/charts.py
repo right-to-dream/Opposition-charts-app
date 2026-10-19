@@ -133,18 +133,19 @@ def landing_map(sd: SetPieceData, row: str, *, color_by: str | None = None, them
     return fig
 
 
-def category_compare(sd: SetPieceData, cat: str, *, theme: Theme = DARK, max_quals: int = 6) -> go.Figure:
+def category_compare(sd: SetPieceData, cat: str, *, theme: Theme = DARK, max_quals: int = 12) -> go.Figure:
     """Attacking vs defending of one category: every coded qualifier as % of that phase's coded instances."""
     th = theme
     pc = A.phase_compare(sd, cat)
     plural = A.CATEGORY_PLURAL.get(cat, cat)
     if pc.empty:
         return _base(go.Figure(), th, f"{sd.team} — {plural}", "nothing coded")
-    quals = [q for q in sd.qualifiers if q in set(pc["qualifier"])][:max_quals]
+    quals = A.ordered_quals(sd, [q for q in sd.qualifiers if q in set(pc["qualifier"])])[:max_quals]
     n = len(quals)
     cols = min(3, n)
     rows = int(np.ceil(n / cols))
-    fig = make_subplots(rows=rows, cols=cols, subplot_titles=quals, horizontal_spacing=0.16, vertical_spacing=0.2)
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=[A.qual_html(sd, q) for q in quals],
+                        horizontal_spacing=0.16, vertical_spacing=0.22)
     for i, q in enumerate(quals):
         r, c = divmod(i, cols)
         g = pc[pc["qualifier"] == q]
@@ -176,8 +177,11 @@ def qualifier_grid(sd: SetPieceData, row: str, *, theme: Theme = DARK) -> go.Fig
     n = len(br)
     cols = min(n, 4)
     rows = int(np.ceil(n / cols))
-    fig = make_subplots(rows=rows, cols=cols, subplot_titles=list(br), horizontal_spacing=0.12, vertical_spacing=0.18)
     total = len(sd.of(row=row))
+    br = {q: br[q] for q in A.ordered_quals(sd, br)}
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=[A.qual_html(sd, q, f"{int(v.sum())}/{total} coded")
+                                                              for q, v in br.items()],
+                        horizontal_spacing=0.12, vertical_spacing=0.2)
     for i, (q, vc) in enumerate(br.items()):
         r, c = divmod(i, cols)
         vc = vc.iloc[::-1]
@@ -269,7 +273,7 @@ def contact_map(sd: SetPieceData, row: str, which: int, *, theme: Theme = DARK) 
 
 
 def compare_groups(sd: SetPieceData, groups: list[tuple[str, pd.DataFrame]], title: str, subtitle: str = "", *,
-                   theme: Theme = DARK, max_quals: int = 6) -> go.Figure:
+                   theme: Theme = DARK, max_quals: int = 12) -> go.Figure:
     """Any two-or-more groups side by side (left vs right, direct vs indirect …): every coded qualifier as %
     of that group's coded instances."""
     th = theme
@@ -277,12 +281,13 @@ def compare_groups(sd: SetPieceData, groups: list[tuple[str, pd.DataFrame]], tit
     pc = A.group_compare(sd, groups)
     if pc.empty:
         return _base(go.Figure(), th, title, "nothing coded")
-    quals = [q for q in sd.qualifiers if q in set(pc["qualifier"])][:max_quals]
+    quals = A.ordered_quals(sd, [q for q in sd.qualifiers if q in set(pc["qualifier"])])[:max_quals]
     n = len(quals)
     cols = min(3, n)
     rows = int(np.ceil(n / cols))
     colors = [th.team, th.accent, th.good, th.carry]
-    fig = make_subplots(rows=rows, cols=cols, subplot_titles=quals, horizontal_spacing=0.16, vertical_spacing=0.2)
+    fig = make_subplots(rows=rows, cols=cols, subplot_titles=[A.qual_html(sd, q) for q in quals],
+                        horizontal_spacing=0.16, vertical_spacing=0.22)
     for i, q in enumerate(quals):
         r, c = divmod(i, cols)
         g = pc[pc["qualifier"] == q]
@@ -332,9 +337,11 @@ def takers_chart(sd: SetPieceData, g: pd.DataFrame, title: str, *, theme: Theme 
                                                     if r.get("1st contact decided") else "")
                                for v, (_, r) in zip(t["Taken"], t.iterrows())],
                          textposition="outside", cliponaxis=False, hovertext=hover, hoverinfo="text"))
-    _base(fig, th, title, "set pieces per taker · red = led to a goal / shot / threat · hover for details",
-          140 + 38 * len(t))
+    _base(fig, th, title, f"{sd.team} takers by shirt number · bar = set pieces taken · red = led to a goal / shot / "
+          "threat · hover for details", 160 + 42 * len(t))
     fig.update_layout(barmode="stack", xaxis=dict(visible=False, range=[0, t["Taken"].max() * 1.9]))
+    fig.update_yaxes(title=dict(text="Taker (shirt number)", font=dict(color=th.muted, size=12)),
+                     tickfont=dict(size=13, color=th.text))
     return fig
 
 

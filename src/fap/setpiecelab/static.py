@@ -180,6 +180,14 @@ def landing(sd: SetPieceData, row: str, *, color_by: str | None = None, theme: T
 
 
 # ------------------------------------------------------------------ qualifiers
+def _qual_title(ax, sd: SetPieceData, q: str, th: Theme, extra: str = "") -> None:
+    """Panel title: coloured headline (1st contact = blue, 2nd ball = purple, overall result = gold) + detail."""
+    head, detail = A.qual_title(sd, q)
+    col = A.CONTACT_COLORS[A.qual_kind(sd, q)] or th.muted
+    ax.set_title(head, loc="left", fontsize=10, color=col, fontweight="bold", pad=16)
+    tail = "  ·  ".join(x for x in (detail, extra) if x)
+    if tail:
+        ax.text(0, 1.02, tail, transform=ax.transAxes, ha="left", va="bottom", fontsize=8, color=th.muted)
 def _bar_color(th: Theme, k: str) -> str:
     yn = is_yes(k)
     kl = k.lower()
@@ -204,7 +212,7 @@ def qualifiers(sd: SetPieceData, row: str, *, theme: Theme = DARK):
             fig.text(0.5, 0.5, "No qualifiers coded", ha="center", color=th.muted, fontsize=13)
             return fig
         top = 1 - 1.25 / H
-        items = list(br.items())
+        items = [(q, br[q]) for q in A.ordered_quals(sd, br)]
         for r in range(rows_):
             hgt = (0.36 * heights[r]) / H
             for c in range(cols):
@@ -224,8 +232,7 @@ def qualifiers(sd: SetPieceData, row: str, *, theme: Theme = DARK):
                 ax.set_xticks([])
                 _style_ax(ax, th)
                 ax.spines["bottom"].set_visible(False)
-                ax.set_title(f"{q.upper()}  ·  {int(vc.sum())}/{total} coded", loc="left", fontsize=9, color=th.muted,
-                             fontweight="bold", pad=6)
+                _qual_title(ax, sd, q, th, f"{int(vc.sum())}/{total} coded")
             top -= hgt + 0.75 / H
     return fig
 
@@ -322,13 +329,13 @@ def report_card(sd: SetPieceData, row: str, *, theme: Theme = DARK):
     return fig
 
 
-def category_compare(sd: SetPieceData, cat: str, *, theme: Theme = DARK, max_quals: int = 6):
+def category_compare(sd: SetPieceData, cat: str, *, theme: Theme = DARK, max_quals: int = 12):
     """Attacking vs defending of one category, every qualifier as % of that phase — with the key findings."""
     import re as _re
     th = theme
     pc = A.phase_compare(sd, cat)
     plural = A.CATEGORY_PLURAL.get(cat, cat)
-    quals = [q for q in sd.qualifiers if not pc.empty and q in set(pc["qualifier"])][:max_quals]
+    quals = A.ordered_quals(sd, [q for q in sd.qualifiers if not pc.empty and q in set(pc["qualifier"])])[:max_quals]
     ins = [_re.sub(r"\*\*", "", t) for t in A.category_insights(sd, cat)]
     lines = [w for t in ins for w in textwrap.wrap(t, 150)]
     cols = min(3, max(1, len(quals)))
@@ -370,7 +377,7 @@ def category_compare(sd: SetPieceData, cat: str, *, theme: Theme = DARK, max_qua
                 ax.set_xticks([])
                 _style_ax(ax, th)
                 ax.spines["bottom"].set_visible(False)
-                ax.set_title(q.upper(), loc="left", fontsize=9, color=th.muted, fontweight="bold", pad=6)
+                _qual_title(ax, sd, q, th)
             top -= hgt + 0.8 / H
     return fig
 
@@ -430,13 +437,13 @@ def contact_map(sd: SetPieceData, row: str, which: int, *, theme: Theme = DARK):
 
 
 def compare_groups(sd: SetPieceData, groups: list, title: str, subtitle: str = "", lines: list[str] | None = None, *,
-                   theme: Theme = DARK, max_quals: int = 6):
+                   theme: Theme = DARK, max_quals: int = 12):
     """Static version of charts.compare_groups (+ optional findings above the bars)."""
     import re as _re
     th = theme
     groups = [(lab, g) for lab, g in groups if len(g)]
     pc = A.group_compare(sd, groups)
-    quals = [q for q in sd.qualifiers if not pc.empty and q in set(pc["qualifier"])][:max_quals]
+    quals = A.ordered_quals(sd, [q for q in sd.qualifiers if not pc.empty and q in set(pc["qualifier"])])[:max_quals]
     text = [w for t in (lines or []) for w in textwrap.wrap(_re.sub(r"\*\*", "", t), 150)]
     cols = min(3, max(1, len(quals)))
     rows_ = int(np.ceil(len(quals) / cols)) if quals else 0
@@ -480,7 +487,7 @@ def compare_groups(sd: SetPieceData, groups: list, title: str, subtitle: str = "
                 ax.set_xticks([])
                 _style_ax(ax, th)
                 ax.spines["bottom"].set_visible(False)
-                ax.set_title(q.upper(), loc="left", fontsize=9, color=th.muted, fontweight="bold", pad=6)
+                _qual_title(ax, sd, q, th)
             top -= hgt + 0.8 / H
     return fig
 
@@ -490,8 +497,9 @@ def takers_chart(sd: SetPieceData, g, title: str, *, theme: Theme = DARK):
     t = A.takers(sd, g)
     with _rc(th):
         h = 1.8 + 0.5 * max(1, len(t))
-        fig = _figure(th, (11, h), title, "set pieces per taker   ·   red = led to a goal / shot / threat")
-        ax = fig.add_axes([0.12, 0.12, 0.62, 1 - 1.5 / h])
+        fig = _figure(th, (11, h), title, f"{sd.team} takers by shirt number   ·   bar = set pieces taken   ·   "
+                      "red = led to a goal / shot / threat")
+        ax = fig.add_axes([0.17, 0.12, 0.57, 1 - 1.5 / h])
         if t.empty:
             ax.axis("off")
             ax.text(0.5, 0.5, "No taker coded", ha="center", color=th.muted, fontsize=12)
@@ -512,6 +520,7 @@ def takers_chart(sd: SetPieceData, g, title: str, *, theme: Theme = DARK):
             bits.append(f"L {r['Left']} · R {r['Right']}")
             ax.text(r["Taken"] + t["Taken"].max() * 0.02, yi, "   ·   ".join(bits), va="center", fontsize=9, color=th.text)
         ax.set_yticks(y, t["Taker"], fontsize=11, color=th.text, fontweight="bold")
+        ax.set_ylabel("Taker (shirt number)", color=th.muted, fontsize=10, labelpad=10)
         ax.set_xlim(0, t["Taken"].max() * 1.05)
         ax.set_xticks([])
         _style_ax(ax, th)

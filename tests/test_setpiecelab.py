@@ -202,7 +202,7 @@ def test_v2_variants_sides_takers_goal_and_typo_coords():
     left = sd.subset(side="Left")
     assert list(left.df["row"]) == ["Long Throw In"]
     t = A.takers(sd).set_index("Taker")
-    assert t.loc["#24", "Taken"] == 3 and t.loc["#7", "Goals"] == 1
+    assert t.loc["Player #24", "Taken"] == 3 and t.loc["Player #7", "Goals"] == 1
     assert any("Left" in s for s in A.side_insights(sd, "Long Throw In"))
     CH.takers_chart(sd, sd.df, "t"); CH.goal_placement(sd, "Penalty")
     CH.compare_groups(sd, [("A", df[:2]), ("B", df[2:])], "t")

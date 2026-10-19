@@ -345,7 +345,7 @@ def takers(sd: SetPieceData, g: pd.DataFrame | None = None) -> pd.DataFrame:
     rc = result_col(sd)
     c1, c2 = _col(sd, CONTESTS[0]), _col(sd, CONTESTS[1])
     for t, d in g.groupby("taker"):
-        rec = {"Taker": f"#{t}", "taker": str(t), "Taken": len(d),
+        rec = {"Taker": f"Player #{t}", "taker": str(t), "Taken": len(d),
                "Types": ", ".join(f"{k} {v}" for k, v in d["row"].value_counts().items())}
         for col, lab in ((c1, "1st contact"), (c2, "2nd ball")):
             if col:
@@ -405,3 +405,44 @@ def side_insights(sd: SetPieceData, row: str) -> list[str]:
             bits.append("taker " + ", ".join(f"#{a} {b}" for a, b in tk.items()))
         out.append(f"**{s}:** " + " · ".join(bits) + ".")
     return out
+
+
+# ------------------------------------------------------------------ qualifier titles (1st contact vs 2nd ball)
+CONTACT_COLORS = {"first": "#3ab0ff", "second": "#b18cff", "result": "#ffc94a", "": None}
+
+
+def qual_kind(sd: SetPieceData, q: str) -> str:
+    """'first' (1st contact + its outcome), 'second' (2nd ball + its outcome), 'result' or ''."""
+    k = q.lower()
+    if q == RESULT_COL:
+        return "result"
+    if k.startswith(("1st", "first")):
+        return "first"
+    if k.startswith(("2nd", "second")):
+        return "second"
+    return ""
+
+
+def qual_title(sd: SetPieceData, q: str) -> tuple[str, str]:
+    """(headline, detail) for a qualifier panel, so the two contacts are never confused."""
+    kind, k = qual_kind(sd, q), q.lower()
+    if kind == "result":
+        return "OVERALL RESULT", "most dangerous of both contacts"
+    if kind in ("first", "second"):
+        head = "1ST CONTACT" if kind == "first" else "2ND BALL"
+        return head, ("what happened" if "outcome" in k else f"who won it ({sd.team} / opponent)")
+    return q.upper(), ""
+
+
+def ordered_quals(sd: SetPieceData, quals) -> list[str]:
+    """Result, then the 1st-contact pair, then the 2nd-ball pair, then everything else (file order)."""
+    rank = {"result": 0, "first": 1, "second": 2, "": 3}
+    quals = list(quals)
+    return sorted(quals, key=lambda q: (rank[qual_kind(sd, q)], "outcome" in q.lower(), quals.index(q)))
+
+
+def qual_html(sd: SetPieceData, q: str, extra: str = "") -> str:
+    head, detail = qual_title(sd, q)
+    col = CONTACT_COLORS[qual_kind(sd, q)]
+    h = f"<span style='color:{col}'><b>{head}</b></span>" if col else f"<b>{head}</b>"
+    return h + (f" · {detail}" if detail else "") + (f" · {extra}" if extra else "")
