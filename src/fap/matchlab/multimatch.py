@@ -103,17 +103,27 @@ TEAM_METRICS = ("Possession % (passes)", "Field tilt %", "Passes", "Pass accurac
 TEAM_GROUPS = {
     "Possession": ("Possession % (passes)", "Field tilt %", "Passes", "Pass accuracy %", "Possessions",
                    "Passes / possession", "Long balls %"),
-    "Build-up & progression": ("Build-ups", "Build-ups leaving own third %", "Build-ups reaching final third %",
-                               "Progressive passes", "Progressive carries", "Line-breaking passes", "Final-third entries"),
-    "Attacking": ("Box entries", "Shots", "On target", "Goals", "xG", "xG per shot"),
+    "Build-up": ("Build-ups", "Build-up passes / possession", "Build-up exit success %", "Build-up exits by long ball %",
+                 "Build-ups leaving own third %", "Build-ups reaching final third %", "Build-ups ending in a shot %",
+                 "Losses in own third"),
+    "Progression": ("Progressive passes", "Progressive carries", "Line-breaking passes", "Switches of play",
+                    "Final-third entries", "Final-third entries (pass + carry)", "Final-third entry success %",
+                    "F3 entries by carry %", "F3 entries left %", "F3 entries centre %", "F3 entries right %",
+                    "Time to final third (s)"),
+    "Box entries": ("Box entries", "Box entry attempts", "Box entry success %", "Box entries by pass",
+                    "Box entries by carry", "Box entries by cross", "Box entries per F3 entry %", "Touches in box"),
+    "Attacking": ("Shots", "On target", "Goals", "xG", "xG per shot"),
     "Pressing": ("PPDA", "PPDA (possessions)", "Seconds per def. action", "High regains", "High regains (final third)",
                  "Opp. possessions won back in their half %"),
     "Defending": ("Shots against", "xG against", "Goals against", "Def. action height (m)", "Defensive actions",
                   "Recoveries", "Interceptions", "Aerial duels won %", "Second balls won %"),
-    "Transitions": ("Counter-pressed %", "Regained in window %", "Losses in own third"),
+    "Transitions": ("Counter-pressed %", "Regained in window %"),
 }
 LOWER_BETTER = {"PPDA", "PPDA (possessions)", "Seconds per def. action", "Shots against", "xG against", "Goals against", "Losses in own third", "Ball losses"}
-NEUTRAL = {"Long balls %", "Possessions", "Build-ups", "Actions", "Carries"}   # style, not better / worse
+NEUTRAL = {"Long balls %", "Possessions", "Build-ups", "Actions", "Carries", "Build-up passes / possession",
+           "Build-up exits by long ball %", "F3 entries by carry %", "F3 entries left %", "F3 entries centre %",
+           "F3 entries right %", "Time to final third (s)", "Box entries by pass", "Box entries by carry",
+           "Box entries by cross"}   # style, not better / worse
 
 
 def metric_group(name: str) -> str:
@@ -144,6 +154,13 @@ def _team_col(md: MatchData, team: str, half) -> dict:
         out["Build-ups leaving own third %"] = float((bp["max_x"] >= md.thirds[0]).mean() * 100)
         out["Build-ups reaching final third %"] = float(bp["reached_f3"].mean() * 100)
         out["Losses in own third"] = len(b.get("losses", []))
+        out["Build-up passes / possession"] = float(bp["n_passes"].mean())
+        out["Build-ups ending in a shot %"] = float(bp["shot"].mean() * 100)
+        ex = b.get("exits", pd.DataFrame())
+        if len(ex):
+            out["Build-up exit success %"] = float(ex["success"].mean() * 100)
+            out["Build-up exits by long ball %"] = float((ex["method"] == "Long pass").mean() * 100)
+    out.update(_progression_rows(md, team, half))
     opp_team = md.opponent(team)
     opp_ev = md.events[md.events["team"] == opp_team]
     if half is not None:
@@ -159,6 +176,45 @@ def _team_col(md: MatchData, team: str, half) -> dict:
     cps = CP.summary(CP.analyse(md, team, md.cp_window, half))
     out["Counter-pressed %"] = cps.get("pressed_pct")
     out["Regained in window %"] = cps.get("regained_pct")
+    return out
+
+
+def _progression_rows(md: MatchData, team: str, half) -> dict:
+    """Progression into the final third and entries into the box (passes + carries) for the team comparison."""
+    from fap.matchlab import team as T
+    from fap.matchlab.metrics import in_box
+    out: dict = {}
+    pr = T.progression(md, team, half)
+    en = pr.get("entries", pd.DataFrame())
+    out["Switches of play"] = int((pr.get("switches", pd.DataFrame()).get("outcome", pd.Series(dtype=float)) == 1).sum())
+    if len(en):
+        ok = en[en["success"]]
+        out["Final-third entries (pass + carry)"] = len(ok)
+        out["Final-third entry success %"] = float(en["success"].mean() * 100)
+        if len(ok):
+            out["F3 entries by carry %"] = float((ok["method"] == "Carry").mean() * 100)
+            ch = ok["end_channel"].astype(str)
+            out["F3 entries left %"] = float(ch.str.startswith("Left").mean() * 100)
+            out["F3 entries centre %"] = float((ch == "Centre").mean() * 100)
+            out["F3 entries right %"] = float(ch.str.startswith("Right").mean() * 100)
+    else:
+        out["Final-third entries (pass + carry)"] = 0
+    tt = pr.get("time_to_f3", pd.DataFrame())
+    if len(tt):
+        out["Time to final third (s)"] = float(tt["seconds"].median())
+    ev = md.events if half is None else md.events[md.events["half"] == half]
+    me = ev[ev["team"] == team]
+    bx = me[me["etype"].isin(["pass", "carry"]) & me["end_x"].notna() & me["box_entry"]]
+    succ = (bx["outcome"] == 1) | (bx["etype"] == "carry")
+    out["Box entry attempts"] = len(bx)
+    out["Box entry success %"] = float(succ.mean() * 100) if len(bx) else np.nan
+    out["Box entries by pass"] = int((succ & (bx["etype"] == "pass") & ~bx["cross"].astype(bool)).sum())
+    out["Box entries by carry"] = int((bx["etype"] == "carry").sum())
+    out["Box entries by cross"] = int((succ & (bx["etype"] == "pass") & bx["cross"].astype(bool)).sum())
+    f3 = out.get("Final-third entries (pass + carry)") or 0
+    out["Box entries per F3 entry %"] = (int(succ.sum()) / f3 * 100) if f3 else np.nan
+    touch = me[me["etype"].isin(["receive", "pass", "carry", "dribble", "shot"]) & me["x"].notna() & ~me["derived"].astype(bool)]
+    out["Touches in box"] = int(in_box(touch["x"], touch["y"]).sum())
     return out
 
 

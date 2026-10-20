@@ -400,10 +400,26 @@ def load_match(src: Any, name: str = "", *, mirror_y: bool = False,
     return md
 
 
+LOSS_DEDUPE_S = 3.0
+
+
 def loss_mask(ev: pd.DataFrame) -> pd.Series:
-    """Ball losses: failed passes and dribbles, 'ball lost', and errors tagged 'ball lost'."""
-    return (((ev["etype"] == "pass") & (ev["outcome"] == 0)) | ((ev["etype"] == "dribble") & (ev["outcome"] == 0))
-            | (ev["etype"] == "ball_lost") | ((ev["etype"] == "error") & ev["labels"].map(lambda l: "ball lost" in l)))
+    """Ball losses: failed passes and dribbles, 'ball lost', and errors tagged 'ball lost'. An error 'ball lost'
+    tagged within 3 s of the SAME player's failed pass / dribble / ball lost is the same loss → counted once."""
+    base = (((ev["etype"] == "pass") & (ev["outcome"] == 0)) | ((ev["etype"] == "dribble") & (ev["outcome"] == 0))
+            | (ev["etype"] == "ball_lost"))
+    err = (ev["etype"] == "error") & ev["labels"].map(lambda l: "ball lost" in l)
+    if err.any() and base.any() and {"t", "half", "team", "player"} <= set(ev.columns):
+        b = ev[base]
+        for i in ev.index[err]:
+            r = ev.loc[i]
+            if r["player"] in ("", "0"):
+                continue
+            same = b[(b["team"] == r["team"]) & (b["player"] == r["player"]) & (b["half"] == r["half"])
+                     & ((b["t"] - r["t"]).abs() <= LOSS_DEDUPE_S)]
+            if len(same):
+                err.at[i] = False
+    return base | err
 
 
 def at_loss(df: pd.DataFrame) -> pd.DataFrame:

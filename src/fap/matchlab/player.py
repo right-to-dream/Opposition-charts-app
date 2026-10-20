@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from fap.matchlab.metrics import DEF_ACTIONS, THIRD_NAMES, _pct, in_box, player_table
+from fap.matchlab.metrics import PLAYER_DEF_ACTIONS, THIRD_NAMES, _pct, in_box, player_table
 from fap.matchlab.memo import per_match
 
 if TYPE_CHECKING:
@@ -40,8 +40,8 @@ def _scope(md: "MatchData", half) -> pd.DataFrame:
 
 
 def _losses(g: pd.DataFrame) -> pd.DataFrame:
-    return g[((g["etype"] == "pass") & (g["outcome"] == 0)) | ((g["etype"] == "dribble") & (g["outcome"] == 0))
-             | (g["etype"] == "ball_lost") | ((g["etype"] == "error") & g["labels"].map(lambda l: "ball lost" in l))]
+    from fap.matchlab.loader import loss_mask
+    return g[loss_mask(g)]
 
 
 @per_match
@@ -100,13 +100,15 @@ def profile(md: "MatchData", team: str, player: str, half: int | None = None) ->
     }
     out["shots"] = s
 
-    d = me[me["etype"].isin(DEF_ACTIONS)]
+    d = me[me["etype"].isin(PLAYER_DEF_ACTIONS)]
     duels = me[me["etype"] == "duel"]
     won = lambda g: int(g["labels"].map(lambda l: "won" in l).sum())  # noqa: E731
     out["defending"] = {
         "Defensive actions": len(d),
         "Duels won / lost": f"{won(duels)}/{int(duels['labels'].map(lambda l: 'lost' in l).sum())}",
-        "Tackles (won)": f"{int((me['etype'] == 'tackle').sum())} ({won(me[me['etype'] == 'tackle'])})",
+        "Tackles (won ball · cleared)": (f"{int((me['etype'] == 'tackle').sum())} ({won(me[me['etype'] == 'tackle'])} · "
+                                         f"{int(me[me['etype'] == 'tackle']['labels'].map(lambda l: 'clear' in l).sum())})"),
+        "Dribbled past": int((me["etype"] == "dribbled_past").sum()),
         "Interceptions (won)": f"{int((me['etype'] == 'interception').sum())} ({won(me[me['etype'] == 'interception'])})",
         "Recoveries": int((me["etype"] == "recovery").sum()), "Presses": int((me["etype"] == "press").sum()),
         "Fouls": int((me["etype"] == "foul").sum()),
@@ -190,6 +192,8 @@ def player_stats(md: "MatchData", team: str, half: int | None = None) -> pd.Data
         pr_tag = pr[pr["outcome"].notna()]
         r.update({
             "Tackles": len(tk), "Tackles won": _won(tk),
+            "Tackles cleared": int(tk["labels"].map(lambda l: "clear" in l and "won" not in l).sum()),
+            "Dribbled past": int((g["etype"] == "dribbled_past").sum()),
             "Interceptions": len(it), "Interceptions won": _won(it),
             "Duels": len(du), "Duels won": _won(du), "Duels decided": _won(du) + du_lost,
             "Recoveries": int((g["etype"] == "recovery").sum()),
@@ -197,7 +201,7 @@ def player_stats(md: "MatchData", team: str, half: int | None = None) -> pd.Data
             "Blocks": int((g["etype"] == "block").sum()), "Clearances": int((g["etype"] == "clearance").sum()),
             "Fouls": int((g["etype"] == "foul").sum()),
         })
-        r["Defensive actions"] = int(g["etype"].isin(DEF_ACTIONS).sum())
+        r["Defensive actions"] = int(g["etype"].isin(PLAYER_DEF_ACTIONS).sum())
         p = g[g["etype"] == "pass"]
         c = g[(g["etype"] == "carry") & g["end_x"].notna()]
         r["Progressive passes"] = int((p["progressive"] & (p["outcome"] == 1)).sum())
@@ -226,7 +230,9 @@ def player_stats(md: "MatchData", team: str, half: int | None = None) -> pd.Data
     def pct(a, b):
         return np.where(out[b] > 0, out[a] / out[b].where(out[b] > 0, 1) * 100, np.nan)
 
-    out["Tackle success %"] = pct("Tackles won", "Tackles")
+    out["Tackles successful"] = out["Tackles won"] + out["Tackles cleared"]
+    out["Tackle success %"] = pct("Tackles successful", "Tackles")
+    out["Tackle possession %"] = pct("Tackles won", "Tackles")
     out["Interception won %"] = pct("Interceptions won", "Interceptions")
     out["Duel success %"] = pct("Duels won", "Duels decided")
     out["Press success %"] = pct("Presses successful", "Presses tagged")
@@ -239,7 +245,7 @@ def player_stats(md: "MatchData", team: str, half: int | None = None) -> pd.Data
 LEADERBOARDS = {
     "Defending": [
         ("Defensive actions", "Defensive actions", None, None),
-        ("Tackles", "Tackles", "Tackles won", "Tackles"),
+        ("Tackles (successful = won the ball or cleared it)", "Tackles", "Tackles successful", "Tackles"),
         ("Interceptions (won · rest cleared)", "Interceptions", "Interceptions won", "Interceptions"),
         ("Duels", "Duels", "Duels won", "Duels decided"),
         ("Recoveries", "Recoveries", None, None),
@@ -248,6 +254,7 @@ LEADERBOARDS = {
         ("Blocks", "Blocks", None, None),
         ("Clearances", "Clearances", None, None),
         ("Fouls committed", "Fouls", None, None),
+        ("Dribbled past (lower is better)", "Dribbled past", None, None),
     ],
     "Progression & ball carrying": [
         ("Progressive actions (total)", "Progressive actions", None, None),

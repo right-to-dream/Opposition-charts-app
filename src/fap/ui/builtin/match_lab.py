@@ -79,6 +79,38 @@ def _mm_pool(sig: str, half, positions_json: str, min_minutes: float, by: str, _
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
+def _match_insights(sig: str, team: str, half, _md, _names):
+    from fap.matchlab import insights as INS
+    return INS.match_insights(_md, team, half, _names)
+
+
+_TONE = {"strength": ("#16a34a", "Strength"), "concern": ("#dc2626", "Watch"), "note": ("#3b82f6", "Note")}
+
+
+def _render_insights(insights) -> None:
+    """Insight cards grouped by section (app only)."""
+    import html as _h
+    from fap.matchlab import insights as INS
+    groups = INS.group(insights)
+    if not groups:
+        st.info("Not enough tagged data for insights.")
+        return
+    n = {t: sum(1 for i in insights if i.tone == t) for t in _TONE}
+    st.caption(f"{n['strength']} strengths · {n['concern']} points to watch · {n['note']} notes")
+    for sec, items in groups.items():
+        st.markdown(f"##### {sec}")
+        cols = st.columns(2)
+        for k, i in enumerate(items):
+            col, lab = _TONE.get(i.tone, _TONE["note"])
+            cols[k % 2].markdown(
+                f"<div style='border-left:4px solid {col};padding:8px 12px;margin:0 0 10px 0;border-radius:6px;"
+                f"background:rgba(127,127,127,0.07)'><div style='font-size:0.72rem;font-weight:700;color:{col};"
+                f"letter-spacing:.04em;text-transform:uppercase'>{lab}</div><div style='font-weight:600;margin:2px 0'>"
+                f"{_h.escape(i.title)}</div><div style='font-size:0.88rem;opacity:.85'>{_h.escape(i.detail)}</div></div>",
+                unsafe_allow_html=True)
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
 def _mm_table(sig: str, player, half, _items, _cm):
     from fap.matchlab import multimatch as MM
     return MM.comparison_table(_items, _cm, player=player, half=half)
@@ -286,11 +318,16 @@ class MatchLabPage(Page):
             cc[1].caption(f"Excel export unavailable: {exc}")
         ctx = dict(sig=sig, md=md, team=team, half=half, player=player, theme=theme, dpi=int(dpi), names=names)
 
-        tabs = st.tabs(["Overview", "Team analysis", "Passing", "Progression & attack", "Phases of play", "Defending",
-                        "Heat maps", "Players", "Data & export"])
+        tabs = list(st.tabs(["Overview", "Insights", "Team analysis", "Passing", "Progression & attack",
+                             "Phases of play", "Defending", "Heat maps", "Players", "Data & export"]))
+        ins_tab = tabs.pop(1)                      # app only — insights never go into a report
         with tabs[0]:
             self._chart(ctx, "comparison")
             self._chart(ctx, "momentum")
+        with ins_tab:
+            st.caption("Rule-based observations from this file's tags — every point shows the numbers behind it. "
+                       "Shown here only; not included in any PDF or report.")
+            _render_insights(_match_insights(sig, team, half, md, names))
         with tabs[1]:
             self._team_analysis(ctx)
         with tabs[2]:
@@ -415,7 +452,8 @@ class MatchLabPage(Page):
         who = f"{our}" if player is None else plabel
         table = _mm_table(allsig + f"|{theme}", player, half, items, cm)
 
-        tabs = st.tabs(["Comparison", "Players", "Charts", "PDF report"])
+        tabs = list(st.tabs(["Comparison", "Insights", "Players", "Charts", "PDF report"]))
+        ins_tab = tabs.pop(1)
         with tabs[0]:
             st.markdown(f"#### {who} — match scorecard")
             st.caption("Each column is a match; each cell is coloured green (better) or red (worse) than the average of "
@@ -479,6 +517,20 @@ class MatchLabPage(Page):
                 out.append((it.label, png))
             comb, _ = _png(allsig, key, our, half, pl, theme, tuple(sorted(opts.items())), dpi_, cm)
             return out, comb
+
+        with ins_tab:
+            from fap.matchlab import insights as INS
+            st.caption("Rule-based observations across these matches (in the order they were loaded) — every point "
+                       "shows the numbers behind it. Shown here only; not included in the PDF report.")
+            pool = None
+            if player is None:
+                try:
+                    pool = _mm_pool(allsig, half, json.dumps(st.session_state.get("_ml_mm_positions", {}), sort_keys=True),
+                                    float(st.session_state.get("ml_mm_minmin", 90)), "team", items, ref.squad)
+                except Exception:
+                    pool = None
+            _render_insights(INS.multi_insights(table, pool=pool,
+                                                min_minutes=float(st.session_state.get("ml_mm_minmin", 90))))
 
         with tabs[1]:
             self._mm_players(shell, items, allsig, ref, half, theme, th, dpi)
@@ -647,14 +699,22 @@ class MatchLabPage(Page):
                 cols = {f"pct:{m.label}": m.label for m in PC.METRICS}
             else:
                 cols = {c_: c_ for c_ in ("Passes", "Passes completed", "Progressive passes", "Progressive carries",
-                                          "Key passes", "Shots", "xG", "Defensive actions", "Recoveries", "Duels won",
-                                          "Second balls won", "Ball losses")}
+                                          "Key passes", "Shots", "xG", "Defensive actions", "Tackles", "Tackles won",
+                                          "Tackle success %", "Recoveries", "Duels won", "Duels decided", "Duel success %",
+                                          "Second balls won", "Dribbled past", "Ball losses")}
             tdf = d[base_cols + list(cols)].rename(columns=cols)
             sty = tdf.style.format(precision=2, na_rep="–").format({"Minutes": "{:.0f}"})
             if view == "Percentiles":
                 sty = sty.background_gradient(cmap="RdYlGn", vmin=0, vmax=100, subset=list(cols.values())).format(
                     precision=0, na_rep="–", subset=list(cols.values()))
-            st.dataframe(sty, use_container_width=True, hide_index=True, height=min(640, 60 + 35 * len(tdf)))
+            helps = {m.label: m.help for m in PC.METRICS if m.help}
+            st.dataframe(sty, use_container_width=True, hide_index=True, height=min(640, 60 + 35 * len(tdf)),
+                         column_config={c_: st.column_config.Column(help=helps[c_]) for c_ in tdf.columns if c_ in helps})
+            with st.expander("What do these metrics mean?", expanded=False):
+                st.markdown("**Duels won vs Duel success %** — *Duels won* is HOW MANY duels a player won (per 90): "
+                            "volume. *Duel success %* is HOW OFTEN he wins them: won ÷ (won + lost): efficiency. "
+                            "A player can win many duels with a low % (he contests a lot) or few duels with a high %.")
+                st.markdown("\n".join(f"- **{m.label}** — {m.help}" for m in PC.METRICS if m.help))
             st.download_button("Table (CSV)", tdf.round(3).to_csv(index=False).encode("utf-8-sig"),
                                file_name=f"players_{view.lower().replace(' ', '_')}.csv", mime="text/csv",
                                key="ml_mm_tbl_csv")

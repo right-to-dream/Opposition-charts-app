@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from fap.matchlab.loader import PITCH_L, PITCH_W
+from fap.matchlab.loader import loss_mask as _loss_mask
 from fap.matchlab.memo import per_match
 
 if TYPE_CHECKING:
@@ -40,6 +41,8 @@ SWITCH_MIN_M = 30.0        # lateral distance of a switch of play (flank / half-
 SET_PIECE_KINDS = ("corner", "free kick", "throw in", "goal kick", "penalty", "kick off")
 DEF_ACTIONS = ("tackle", "interception", "recovery", "block", "clearance", "duel", "foul", "press")
 PPDA_ACTIONS = ("tackle", "interception", "foul", "duel")
+# a PLAYER's defensive actions: actions that dispute / win the ball — presses and fouls are counted separately
+PLAYER_DEF_ACTIONS = ("tackle", "interception", "recovery", "block", "clearance", "duel")
 
 
 def ppda_mask(df: pd.DataFrame) -> pd.Series:
@@ -365,11 +368,9 @@ def player_table(md: "MatchData", team: str, half: int | None = None) -> pd.Data
             "Key passes": int(p["key_pass"].sum()),
             "Crosses": f"{int((p['cross'] & comp).sum())}/{int(p['cross'].sum())}",
             "Shots": int((g["etype"] == "shot").sum()), "xG": round(float(g["xg"].sum()), 2),
-            "Def. actions": int(g["etype"].isin(DEF_ACTIONS).sum()),
+            "Def. actions": int(g["etype"].isin(PLAYER_DEF_ACTIONS).sum()),
             "Recoveries": int((g["etype"] == "recovery").sum()),
-            "Losses": int(((g["etype"] == "pass") & (g["outcome"] == 0)).sum() + (g["etype"] == "ball_lost").sum()
-                          + ((g["etype"] == "dribble") & (g["outcome"] == 0)).sum()
-                          + ((g["etype"] == "error") & g["labels"].map(lambda l: "ball lost" in l)).sum()),
+            "Losses": int(_loss_mask(g).sum()),
         })
     out = pd.DataFrame(rows)
     if not out.empty:

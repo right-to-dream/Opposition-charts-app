@@ -560,3 +560,41 @@ def test_ppda_falls_back_to_possessions_and_regains_are_defensive(md):
     md2.events = md.events[~((md.events["team"] == opp) & (md.events["etype"] == "pass"))]
     pr2 = M.pressing(md2, team)
     assert pr2["PPDA method"] in ("possessions", "") and pr2["PPDA (passes)"] != pr2["PPDA (passes)"]
+
+
+def test_error_ball_lost_with_failed_dribble_counts_once():
+    from fap.matchlab.loader import loss_mask
+    ev = pd.DataFrame({"etype": ["dribble", "error", "error", "pass"], "outcome": [0, None, None, 0],
+                       "labels": [[], ["ball lost"], ["ball lost"], []], "team": ["A"] * 4,
+                       "player": ["7", "7", "9", "9"], "half": [1] * 4, "t": [10.0, 11.0, 40.0, 60.0]})
+    assert loss_mask(ev).tolist() == [True, False, True, True]        # #7's error = the same loss as his dribble
+
+
+def test_player_defensive_actions_exclude_presses_and_fouls(proxy):
+    from fap.matchlab import player as PL
+    from fap.matchlab.metrics import PLAYER_DEF_ACTIONS
+    team = proxy.our_team
+    ps = PL.player_stats(proxy, team).set_index("player")
+    ev = proxy.events[(proxy.events["team"] == team)]
+    for pl in ps.index[:5]:
+        g = ev[ev["player"] == pl]
+        assert ps.at[pl, "Defensive actions"] == int(g["etype"].isin(PLAYER_DEF_ACTIONS).sum())
+    assert "press" not in PLAYER_DEF_ACTIONS and "foul" not in PLAYER_DEF_ACTIONS
+    assert (ps["Tackles successful"] >= ps["Tackles won"]).all() and "Dribbled past" in ps
+
+
+def test_team_comparison_buildup_progression_box_and_insights(md, proxy):
+    from fap.matchlab import insights as INS
+    from fap.matchlab import multimatch as MM
+    from fap.matchlab import playercompare as PC
+    items = [MM.MatchItem("1. A", md, "a"), MM.MatchItem("2. B", proxy, "b"), MM.MatchItem("3. B", proxy, "c")]
+    tb = MM.comparison_table(items, MM.combine(items))
+    for m in ("Build-up exit success %", "Final-third entries (pass + carry)", "Box entry success %",
+              "Box entries by carry", "Touches in box"):
+        assert m in tb.index
+    assert MM.metric_group("Box entry success %") == "Box entries"
+    assert all("PPDA" not in m.label for m in PC.METRICS) and all(m.help for m in PC.METRICS)
+    one = INS.match_insights(proxy, proxy.our_team)
+    assert one and all(i.tone in ("strength", "concern", "note") and i.detail for i in one)
+    many = INS.multi_insights(tb, pool=PC.player_pool(items), min_minutes=0)
+    assert any(i.section == "Summary" for i in many)

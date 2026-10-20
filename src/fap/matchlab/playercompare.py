@@ -34,6 +34,7 @@ class Metric:
     category: str
     higher_better: bool = True
     fmt: str = "{:.2f}"
+    help: str = ""         # what it means — shown in the app as a tooltip / glossary
 
 
 # extra counts derived straight from the events (numerator / denominator pairs for rates)
@@ -99,7 +100,7 @@ def minutes_played(md: MatchData, team: str, half=None) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------ pool
-_COUNTS = ("Tackles", "Tackles won", "Interceptions", "Interceptions won", "Duels", "Duels won", "Duels decided",
+_COUNTS = ("Tackles", "Tackles won", "Tackles successful", "Dribbled past", "Interceptions", "Interceptions won", "Duels", "Duels won", "Duels decided",
            "Recoveries", "Presses", "Presses successful", "Presses tagged", "Blocks", "Clearances", "Fouls",
            "Defensive actions", "Progressive passes", "Progressive carries", "Progressive receptions",
            "Progressive actions", "Carries", "Carry distance (m)", "Carries into final third", "Dribbles",
@@ -107,7 +108,8 @@ _COUNTS = ("Tackles", "Tackles won", "Interceptions", "Interceptions won", "Duel
            "Second balls won", "Actions") + _EXTRA
 _RATES = {"Pass accuracy %": ("Passes completed", "Passes"), "Long pass accuracy %": ("Long passes completed", "Long passes"),
           "Cross accuracy %": ("Crosses completed", "Crosses"), "Forward pass %": ("Forward passes", "Passes"),
-          "Duel success %": ("Duels won", "Duels decided"), "Tackle success %": ("Tackles won", "Tackles"),
+          "Duel success %": ("Duels won", "Duels decided"), "Tackle success %": ("Tackles successful", "Tackles"),
+          "Tackle possession %": ("Tackles won", "Tackles"),
           "Dribble success %": ("Dribbles successful", "Dribbles"),
           "Interception won %": ("Interceptions won", "Interceptions")}
 
@@ -161,37 +163,55 @@ def player_pool(items, squad=None, positions: dict | None = None, half=None) -> 
 
 METRICS: list[Metric] = [
     # Passing
-    Metric("Passes", "Passes p90", "Passing", fmt="{:.1f}"),
-    Metric("Pass accuracy %", "Pass accuracy %", "Passing", fmt="{:.0f}%"),
-    Metric("Forward pass %", "Forward pass %", "Passing", fmt="{:.0f}%"),
-    Metric("Long pass accuracy %", "Long pass accuracy %", "Passing", fmt="{:.0f}%"),
-    Metric("Key passes", "Key passes p90", "Passing"),
-    Metric("Line-breaking passes", "Line-breaking passes p90", "Passing"),
+    Metric("Passes", "Passes p90", "Passing", fmt="{:.1f}", help="Passes attempted per 90 minutes."),
+    Metric("Pass accuracy %", "Pass accuracy %", "Passing", fmt="{:.0f}%", help="Completed ÷ attempted passes."),
+    Metric("Forward pass %", "Forward pass %", "Passing", fmt="{:.0f}%", help="Share of his passes played forward."),
+    Metric("Long pass accuracy %", "Long pass accuracy %", "Passing", fmt="{:.0f}%",
+           help="Completed ÷ attempted long passes."),
+    Metric("Key passes", "Key passes p90", "Passing", help="Passes that led directly to a shot, per 90."),
+    Metric("Line-breaking passes", "Line-breaking passes p90", "Passing",
+           help="Completed passes that broke an opponent line, per 90."),
     # Progression
-    Metric("Progressive passes", "Progressive passes p90", "Progression"),
-    Metric("Progressive carries", "Progressive carries p90", "Progression"),
-    Metric("Progressive receptions", "Progressive receptions p90", "Progression"),
-    Metric("Passes into final third", "Passes into final third p90", "Progression"),
-    Metric("Carries into final third", "Carries into final third p90", "Progression"),
-    Metric("Carry distance (m)", "Carry distance (m) p90", "Progression", fmt="{:.0f}"),
+    Metric("Progressive passes", "Progressive passes p90", "Progression",
+           help="Completed passes that move the ball clearly towards goal, per 90."),
+    Metric("Progressive carries", "Progressive carries p90", "Progression",
+           help="Carries that move the ball clearly towards goal, per 90."),
+    Metric("Progressive receptions", "Progressive receptions p90", "Progression",
+           help="Progressive passes he received, per 90."),
+    Metric("Passes into final third", "Passes into final third p90", "Progression",
+           help="Completed passes ending in the final third, per 90."),
+    Metric("Carries into final third", "Carries into final third p90", "Progression",
+           help="Carries ending in the final third, per 90."),
+    Metric("Carry distance (m)", "Carry distance (m) p90", "Progression", fmt="{:.0f}",
+           help="Metres carried with the ball, per 90."),
     # Attacking
-    Metric("Shots", "Shots p90", "Attacking"),
-    Metric("xG", "xG p90", "Attacking"),
-    Metric("Passes into box", "Passes into box p90", "Attacking"),
-    Metric("Touches in box", "Touches in box p90", "Attacking"),
-    Metric("Dribbles completed", "Dribbles successful p90", "Attacking"),
-    Metric("Dribble success %", "Dribble success %", "Attacking", fmt="{:.0f}%"),
+    Metric("Shots", "Shots p90", "Attacking", help="Shots per 90."),
+    Metric("xG", "xG p90", "Attacking", help="Expected goals of his shots, per 90."),
+    Metric("Passes into box", "Passes into box p90", "Attacking", help="Completed passes ending in the box, per 90."),
+    Metric("Touches in box", "Touches in box p90", "Attacking", help="Actions on the ball inside the box, per 90."),
+    Metric("Dribbles completed", "Dribbles successful p90", "Attacking", help="Successful dribbles per 90 (a COUNT)."),
+    Metric("Dribble success %", "Dribble success %", "Attacking", fmt="{:.0f}%",
+           help="Successful ÷ attempted dribbles (a RATE)."),
     # Defending
-    Metric("Defensive actions", "Defensive actions p90", "Defending", fmt="{:.1f}"),
-    Metric("Tackles won", "Tackles won p90", "Defending"),
-    Metric("Interceptions won", "Interceptions won p90", "Defending"),
-    Metric("Recoveries", "Recoveries p90", "Defending"),
-    Metric("Presses", "Presses p90", "Defending"),
-    Metric("Second balls won", "Second balls won p90", "Defending"),
+    Metric("Defensive actions", "Defensive actions p90", "Defending", fmt="{:.1f}",
+           help="Tackles + interceptions + recoveries + blocks + clearances + duels, per 90. Presses and fouls are NOT included."),
+    Metric("Tackles won", "Tackles won p90", "Defending", help="Tackles that won possession of the ball, per 90."),
+    Metric("Tackle success %", "Tackle success %", "Defending", fmt="{:.0f}%",
+           help="Tackles that won the ball OR cleared it ÷ all tackles."),
+    Metric("Interceptions won", "Interceptions won p90", "Defending",
+           help="Interceptions that kept the ball for us (the rest were cleared), per 90."),
+    Metric("Recoveries", "Recoveries p90", "Defending", help="Loose balls recovered, per 90."),
+    Metric("Presses", "Presses p90", "Defending", help="Pressing actions on the ball carrier, per 90."),
+    Metric("Second balls won", "Second balls won p90", "Defending", help="Second balls won after an aerial / long ball, per 90."),
+    Metric("Dribbled past", "Dribbled past p90", "Defending", higher_better=False,
+           help="Times an opponent dribbled past him, per 90 (lower is better)."),
     # Duels & security
-    Metric("Duels won", "Duels won p90", "Duels & security"),
-    Metric("Duel success %", "Duel success %", "Duels & security", fmt="{:.0f}%"),
-    Metric("Ball losses", "Ball losses p90", "Duels & security", higher_better=False),
+    Metric("Duels won", "Duels won p90", "Duels & security",
+           help="HOW MANY duels he won, per 90 (a COUNT — volume). In these files duels are almost all aerial."),
+    Metric("Duel success %", "Duel success %", "Duels & security", fmt="{:.0f}%",
+           help="HOW OFTEN he wins: duels won ÷ (won + lost) (a RATE — efficiency)."),
+    Metric("Ball losses", "Ball losses p90", "Duels & security", higher_better=False,
+           help="Failed passes + failed dribbles + ball lost (an error tagged at the same moment is not counted twice), per 90."),
 ]
 METRIC_BY_LABEL = {m.label: m for m in METRICS}
 CATEGORIES = list(dict.fromkeys(m.category for m in METRICS))
