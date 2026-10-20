@@ -95,7 +95,29 @@ def player_options(items: list[MatchItem], squad=None) -> list[dict]:
 # ------------------------------------------------------------------ comparison table
 TEAM_METRICS = ("Possession % (passes)", "Field tilt %", "Passes", "Pass accuracy %", "Progressive passes",
                 "Progressive carries", "Final-third entries", "Box entries", "Line-breaking passes", "Long balls %",
-                "Shots", "On target", "Goals", "xG", "PPDA", "Def. action height (m)", "Recoveries")
+                "Shots", "On target", "Goals", "xG", "PPDA", "Def. action height (m)", "Recoveries", "Possessions",
+                "Passes / possession", "Interceptions", "Defensive actions", "Aerial duels won %", "PPDA (possessions)",
+                "Seconds per def. action", "High regains", "High regains (final third)",
+                "Opp. possessions won back in their half %")
+# rows of the team comparison, grouped — and the metrics where LOWER is better (colouring / radar)
+TEAM_GROUPS = {
+    "Possession": ("Possession % (passes)", "Field tilt %", "Passes", "Pass accuracy %", "Possessions",
+                   "Passes / possession", "Long balls %"),
+    "Build-up & progression": ("Build-ups", "Build-ups leaving own third %", "Build-ups reaching final third %",
+                               "Progressive passes", "Progressive carries", "Line-breaking passes", "Final-third entries"),
+    "Attacking": ("Box entries", "Shots", "On target", "Goals", "xG", "xG per shot"),
+    "Pressing": ("PPDA", "PPDA (possessions)", "Seconds per def. action", "High regains", "High regains (final third)",
+                 "Opp. possessions won back in their half %"),
+    "Defending": ("Shots against", "xG against", "Goals against", "Def. action height (m)", "Defensive actions",
+                  "Recoveries", "Interceptions", "Aerial duels won %", "Second balls won %"),
+    "Transitions": ("Counter-pressed %", "Regained in window %", "Losses in own third"),
+}
+LOWER_BETTER = {"PPDA", "PPDA (possessions)", "Seconds per def. action", "Shots against", "xG against", "Goals against", "Losses in own third", "Ball losses"}
+NEUTRAL = {"Long balls %", "Possessions", "Build-ups", "Actions", "Carries"}   # style, not better / worse
+
+
+def metric_group(name: str) -> str:
+    return next((g for g, ms in TEAM_GROUPS.items() if name in ms), "Other")
 PLAYER_METRICS = ("Actions", "Passes", "Pass accuracy %", "Progressive passes", "Progressive carries",
                   "Progressive receptions", "Key passes", "Carries", "Carry distance (m)", "Carries into final third",
                   "Dribbles", "Dribble success %", "Shots", "xG", "Defensive actions", "Tackles won",
@@ -112,8 +134,8 @@ def _team_col(md: MatchData, team: str, half) -> dict:
     opp = md.events[(md.events["team"] == md.opponent(team)) & (md.events["etype"] == "pass")]
     if half is not None:
         opp = opp[opp["half"] == half]
-    if opp.empty:                      # opponent not tagged → shares / PPDA cannot be measured
-        for k in ("Possession % (passes)", "Field tilt %", "PPDA"):
+    if opp.empty:                      # opponent not tagged → shares cannot be measured (PPDA falls back to possessions)
+        for k in ("Possession % (passes)", "Field tilt %"):
             out[k] = np.nan
     b = T.buildup(md, team, half)
     bp = b.get("possessions", pd.DataFrame())
@@ -122,6 +144,16 @@ def _team_col(md: MatchData, team: str, half) -> dict:
         out["Build-ups leaving own third %"] = float((bp["max_x"] >= md.thirds[0]).mean() * 100)
         out["Build-ups reaching final third %"] = float(bp["reached_f3"].mean() * 100)
         out["Losses in own third"] = len(b.get("losses", []))
+    opp_team = md.opponent(team)
+    opp_ev = md.events[md.events["team"] == opp_team]
+    if half is not None:
+        opp_ev = opp_ev[opp_ev["half"] == half]
+    if len(opp_ev[opp_ev["etype"] == "shot"]) or len(opp):        # opponent tagged → what we conceded
+        o = M.team_summary(md, opp_team, half)
+        out["Shots against"], out["xG against"], out["Goals against"] = o.get("Shots"), o.get("xG"), o.get("Goals")
+    else:
+        out["Shots against"] = out["xG against"] = out["Goals against"] = np.nan
+    out["xG per shot"] = (out["xG"] / out["Shots"]) if out.get("Shots") else np.nan
     sb = SB.summary(md, team, half)
     out["Second balls won %"] = sb.get("won %")
     cps = CP.summary(CP.analyse(md, team, md.cp_window, half))
@@ -150,8 +182,19 @@ def comparison_table(items: list[MatchItem], combined: MatchData | None, *, play
     if combined is not None:
         our = combined.teams[0]
         cols["All matches"] = _player_col(combined, our, player, half) if player else _team_col(combined, our, half)
-    df = pd.DataFrame(cols)
-    return df.apply(pd.to_numeric, errors="coerce")
+    df = pd.DataFrame(cols).apply(pd.to_numeric, errors="coerce")
+    if not player:                                     # grouped, in a fixed professional order
+        order = [m for ms in TEAM_GROUPS.values() for m in ms if m in df.index]
+        df = df.reindex(order + [m for m in df.index if m not in order])
+    matches = [it.label for it in items]
+    df.insert(len(matches), "Match average", df[matches].mean(axis=1))
+    if not player and "All matches" in df:             # shares need the opponent tagged — only those matches count
+        for k in ("Possession % (passes)", "Field tilt %"):
+            if k in df.index and df.loc[k, matches].isna().any():
+                df.at[k, "All matches"] = df.loc[k, matches].mean()
+        if "PPDA" in df.index:                         # matches may mix the two PPDA methods → average, not pooled
+            df.at["PPDA", "All matches"] = df.loc["PPDA", matches].mean()
+    return df
 
 
 # ------------------------------------------------------------------ static outputs
@@ -165,7 +208,7 @@ def trend_figure(table: pd.DataFrame, metrics: list[str], title: str, subtitle: 
     import matplotlib.pyplot as plt
     from fap.matchlab.charts import FONT
     th = _theme(theme)
-    t = table.drop(columns=["All matches"], errors="ignore")
+    t = table.drop(columns=["All matches", "Match average"], errors="ignore")
     metrics = [m for m in metrics if m in t.index] or list(t.index[:6])
     n = len(metrics)
     cols = 3 if n > 4 else 2 if n > 1 else 1
@@ -323,3 +366,104 @@ def pdf_report(title: str, subtitle: str, matches: list[str], pages: list[tuple[
             pdf.savefig(fig, facecolor=fig.get_facecolor(), dpi=200)
             plt.close(fig)
     return buf.getvalue()
+
+
+def scorecard_figure(table: pd.DataFrame, title: str, subtitle: str = "", theme=None, lower_better=LOWER_BETTER):
+    """Match-by-match scorecard: one column per match, cells coloured better (green) / worse (red) than the
+    average of the matches for that metric, grouped by phase of play."""
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.patches import Rectangle
+    from fap.matchlab.charts import FONT
+    th = _theme(theme)
+    matches = [c for c in table.columns if c not in ("All matches", "Match average")]
+    cols = matches + [c for c in ("Match average", "All matches") if c in table.columns]
+    groups: list[tuple[str, list[str]]] = []
+    for m in table.index:
+        g = metric_group(m)
+        if not groups or groups[-1][0] != g:
+            groups.append((g, []))
+        groups[-1][1].append(m)
+    n_rows = len(table.index) + len(groups)
+    cw, rh, lw = 1.35, 0.34, 3.2
+    W = lw + cw * len(cols) + 0.5
+    H = 1.5 + rh * (n_rows + 1) + 0.4
+    cmap = LinearSegmentedColormap.from_list("sc", [th.bad, th.panel, th.good])
+    with plt.rc_context({"font.family": FONT}):
+        fig = plt.figure(figsize=(W, H), facecolor=th.bg)
+        fig.text(0.3 / W, 1 - 0.25 / H, title, ha="left", va="top", fontsize=17, fontweight="bold", color=th.text)
+        fig.text(0.3 / W, 1 - 0.68 / H, subtitle or "green = better than the average of these matches · red = worse",
+                 ha="left", va="top", fontsize=9.5, color=th.muted)
+        ax = fig.add_axes([0, 0.4 / H, 1, 1 - 1.5 / H])
+        ax.set_xlim(0, W)
+        ax.set_ylim(-(n_rows + 1) * rh, 0)
+        ax.axis("off")
+        for j, c in enumerate(cols):
+            ax.text(lw + (j + 0.5) * cw, -rh / 2, textwrap.fill(c, 14), ha="center", va="center", fontsize=8.5,
+                    color=th.accent if c in ("Match average", "All matches") else th.text, fontweight="bold")
+        y = -rh
+        for g, ms in groups:
+            ax.text(0.3, y - rh / 2, g.upper(), ha="left", va="center", fontsize=8.5, fontweight="bold", color=th.accent)
+            ax.plot([0.3, W - 0.3], [y - rh, y - rh], color=th.grid, lw=0.6)
+            y -= rh
+            for m in ms:
+                vals = table.loc[m, matches].to_numpy(float)
+                mu, sd = np.nanmean(vals) if np.isfinite(vals).any() else np.nan, np.nanstd(vals) if np.isfinite(vals).any() else np.nan
+                ax.text(0.3, y - rh / 2, m, ha="left", va="center", fontsize=9, color=th.text)
+                for j, c in enumerate(cols):
+                    v = table.at[m, c]
+                    if c in matches and np.isfinite(v) and sd and np.isfinite(sd) and m not in NEUTRAL:
+                        z = (v - mu) / sd * (-1 if m in lower_better else 1)
+                        ax.add_patch(Rectangle((lw + j * cw + 0.04, y - rh + 0.03), cw - 0.08, rh - 0.06,
+                                               color=cmap(0.5 + np.clip(z, -2, 2) / 4), lw=0))
+                    txt = "–" if not np.isfinite(v) else (f"{v:.0f}" if abs(v) >= 100 else f"{v:.2f}" if abs(v) < 3 and v != int(v) else f"{v:.1f}")
+                    ax.text(lw + (j + 0.5) * cw, y - rh / 2, txt, ha="center", va="center", fontsize=9,
+                            color=th.text, fontweight="bold" if c in ("Match average", "All matches") else "normal")
+                y -= rh
+    return fig
+
+
+def match_radar(table: pd.DataFrame, metrics: list[str], title: str, subtitle: str = "", theme=None,
+                lower_better=LOWER_BETTER):
+    """Each match as a shape: every metric scaled 0 (worst of these matches) → 100 (best)."""
+    import matplotlib.pyplot as plt
+    from fap.matchlab.charts import FONT
+    th = _theme(theme)
+    matches = [c for c in table.columns if c not in ("All matches", "Match average")]
+    ms = [m for m in metrics if m in table.index and np.isfinite(table.loc[m, matches].to_numpy(float)).sum() >= 2]
+    n = max(len(ms), 3)
+    ang = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    colors = ["#3ab0ff", "#ff5d73", "#ffc94a", "#2ed8a3", "#b18cff", "#f97316", "#e5e7eb"]
+    with plt.rc_context({"font.family": FONT}):
+        fig = plt.figure(figsize=(10.5, 10), facecolor=th.bg)
+        fig.text(0.03, 0.97, title, ha="left", va="top", fontsize=17, fontweight="bold", color=th.text)
+        fig.text(0.03, 0.93, subtitle or "each metric scaled across these matches: centre = worst, edge = best",
+                 ha="left", va="top", fontsize=9.5, color=th.muted)
+        ax = fig.add_axes([0.13, 0.1, 0.74, 0.74], polar=True)
+        ax.set_facecolor(th.bg)
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+        for ring in (25, 50, 75, 100):
+            ax.plot(np.r_[ang, ang[:1]], [ring] * (n + 1), color=th.grid, lw=0.8)
+        for a in ang:
+            ax.plot([a, a], [0, 100], color=th.grid, lw=0.6)
+        for i, c in enumerate(matches):
+            vals = []
+            for m in ms:
+                row = table.loc[m, matches].to_numpy(float)
+                lo, hi = np.nanmin(row), np.nanmax(row)
+                v = table.at[m, c]
+                sc = 50.0 if not np.isfinite(v) or hi == lo else (v - lo) / (hi - lo) * 100
+                vals.append(100 - sc if m in lower_better else sc)
+            vals = np.array(vals + [50.0] * (n - len(vals)))
+            col = colors[i % len(colors)]
+            ax.fill(np.r_[ang, ang[:1]], np.r_[vals, vals[:1]], color=col, alpha=0.12)
+            ax.plot(np.r_[ang, ang[:1]], np.r_[vals, vals[:1]], color=col, lw=2.2, label=c)
+        ax.set_xticks(ang[:len(ms)], [textwrap.fill(m, 14) for m in ms], fontsize=9, color=th.text)
+        ax.set_yticks([])
+        ax.set_ylim(0, 100)
+        ax.spines["polar"].set_visible(False)
+        ax.grid(False)
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.06), ncol=min(4, len(matches)), frameon=False,
+                  labelcolor=th.text, fontsize=10)
+    return fig

@@ -184,15 +184,17 @@ def defending_kpis(md: "MatchData", team: str, half: int | None = None) -> dict:
     ppda_den = me[ppda_mask(me)]
     ppda_num = op_pass[op_pass["x"] < 0.6 * PITCH_L]
     from fap.matchlab import counterpress
+    from fap.matchlab.metrics import pressing
+    _press = pressing(md, team, half)
     cp = counterpress.analyse(md, team, md.cp_window, half)
     lost = len(cp)
     regained5 = int(cp["regained"].sum()) if lost else 0
     opp_box = ev[(ev["team"] == opp) & (ev["etype"].isin(["pass", "carry"])) & ev["box_entry"] & (ev["outcome"] == 1)]
     return {
-        "PPDA": len(ppda_num) / len(ppda_den) if len(ppda_den) else np.nan,
+        "PPDA": _press["PPDA"], "PPDA method": _press["PPDA method"],
         "Defensive actions": len(d),
         "Def. action height (m)": float(d["x"].mean()) if len(d) else np.nan,
-        "High regains": int(((me["etype"].isin(["recovery"]) | (me["etype"].isin(["interception", "tackle"]) & me["labels"].map(lambda l: "won" in l))) & (me["x"] >= md.thirds[1])).sum()),
+        "High regains": _press["High regains (final third)"],
         "Counter-press actions": int(me["counter_press"].sum()),
         "Losses": lost, "Regained in window": regained5,
         "Opp. box entries allowed": len(opp_box),

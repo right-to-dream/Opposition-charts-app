@@ -911,7 +911,8 @@ def defensive_map(md: MatchData, team: str, *, half=None, player=None, theme: Th
         if items_leg:
             _legend(ax, th, items_leg, y=-0.06, ncol=min(len(items_leg), 4))
         k = P.defending_kpis(md, team, half)
-        items = [("PPDA", _fmt(k["PPDA"], 1)), ("Defensive actions", _fmt(len(d))),
+        items = [("PPDA" + (" (by possessions)" if k.get("PPDA method") == "possessions" else ""), _fmt(k["PPDA"], 1)),
+                 ("Defensive actions", _fmt(len(d))),
                  ("High regains", _fmt(k["High regains"])), ("Counter-press actions", _fmt(k["Counter-press actions"])),
                  (f"Regained ≤{md.cp_window:.0f} s after loss", f"{k['Regained in window']}/{k['Losses']}"),
                  ("Opp. shots / xG allowed", f"{k['Opp. shots allowed']} / {k['Opp. xG allowed']:.2f}")]
@@ -1067,7 +1068,8 @@ def phases_out_of_possession(md: MatchData, team: str, *, half=None, player=None
             _kpis(fig, th, [0.66 + i * 0.11, 0.37, 0.105, 0.5], items, title=r["Phase"], accent=cols[i])
         k = P.defending_kpis(md, team, half)
         tr = P.transitions(md, team, half)
-        items = [("PPDA", _fmt(k["PPDA"], 1)), ("Def. action height", _fmt(k["Def. action height (m)"], 1) + " m"),
+        items = [("PPDA" + (" (by possessions)" if k.get("PPDA method") == "possessions" else ""), _fmt(k["PPDA"], 1)),
+                 ("Def. action height", _fmt(k["Def. action height (m)"], 1) + " m"),
                  (f"Regained ≤{md.cp_window:.0f} s after loss", f"{k['Regained in window']}/{k['Losses']}"),
                  ("Opp. box entries allowed", _fmt(k["Opp. box entries allowed"])),
                  ("Opp. shots allowed", _fmt(k["Opp. shots allowed"])), ("Opp. xG allowed", _fmt(k["Opp. xG allowed"], 2))]

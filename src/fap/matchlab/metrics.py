@@ -334,7 +334,7 @@ def team_summary(md: "MatchData", team: str, half: int | None = None) -> dict:
         "Shots": len(shots), "On target": int(shots["shot_on"].sum()), "Goals": int(shots["shot_goal"].sum()),
         "xG": float(shots["xg"].sum()),
         "Possessions": len(mine), "Passes / possession": float(mine["n_passes"].mean()) if len(mine) else float("nan"),
-        "PPDA": len(opp_pass_zone) / len(our_def_zone) if len(our_def_zone) else float("nan"),
+        **_press_summary(md, team, half),
         "Defensive actions": len(d),
         "Def. action height (m)": float(d["x"].mean()) if len(d) else float("nan"),
         "Recoveries": int((me["etype"] == "recovery").sum()),
@@ -397,3 +397,98 @@ def pass_breakdown(md: "MatchData", team: str, half: int | None = None, player: 
         g["accuracy"] = g["completed"] / g["attempted"] * 100
         out[col] = g
     return out
+
+
+# ------------------------------------------------------------------ pressing (PPDA with / without opponent passes)
+_GIFT = ("error", "ball_lost")          # opponent mistakes — a ball we did not win with a defensive action
+REGAIN_WINDOW_GIFT_S = 3.0
+
+
+def defensive_regains(md: "MatchData", team: str, half: int | None = None) -> pd.DataFrame:
+    """Our ball wins that come from a DEFENSIVE ACTION: recoveries, interceptions and tackles that won the ball —
+    not counting a ball the opponent simply gave away (their Error / Ball lost in the previous 3 s)."""
+    ev = md.events
+    ev = ev if half is None else ev[ev["half"] == half]
+    opp = md.opponent(team)
+    me = ev[ev["team"] == team]
+    won = (me["etype"] == "recovery") | (me["etype"].isin(["interception", "tackle"]) & me["labels"].map(lambda l: "won" in l))
+    reg = me[won & me["x"].notna()]
+    gifts = ev[(ev["team"] == opp) & ev["etype"].isin(_GIFT)][["half", "t"]]
+    if len(reg) and len(gifts):
+        keep = []
+        for _, r in reg.iterrows():
+            g = gifts[(gifts["half"] == r["half"]) & (gifts["t"] <= r["t"]) & (r["t"] - gifts["t"] <= REGAIN_WINDOW_GIFT_S)]
+            keep.append(g.empty)
+        reg = reg[np.array(keep, bool)]
+    return reg
+
+
+def _opp_possessions(md: "MatchData", team: str, half: int | None = None) -> pd.DataFrame:
+    """Opponent possessions with their duration (to our next possession or the first dead ball) and how they
+    ended (did WE win the ball back with a defensive action, and where)."""
+    poss = md.possessions
+    if poss.empty:
+        return poss
+    ev = md.events[md.events["poss_id"] >= 0]
+    t0 = ev.groupby("poss_id")["t"].min()
+    dead = ev[ev["etype"].isin(["ball_out", "foul", "foul_won", "offside", "half_end"])].groupby("poss_id")["t"].min()
+    first_idx = ev.reset_index().groupby("poss_id")["index"].min()
+    opp = md.opponent(team)
+    reg_idx = set(defensive_regains(md, team).index)
+    rows = []
+    ids = sorted(t0.index)
+    nxt = {a: b for a, b in zip(ids, ids[1:])}
+    for _, p in poss[poss["team"] == opp].iterrows():
+        pid = p["poss_id"]
+        if half is not None and p["half"] != half:
+            continue
+        start = t0.get(pid, np.nan)
+        n = nxt.get(pid)
+        end = t0.get(n, np.nan) if n is not None else np.nan
+        if pid in dead.index:
+            end = min(end, dead[pid]) if end == end else dead[pid]
+        dur = float(np.clip(end - start, 0, 90)) if end == end and start == start else np.nan
+        won_back, won_x = False, np.nan
+        if n is not None and n in first_idx.index:
+            fi = first_idx[n]
+            e = md.events.loc[fi]
+            if e["team"] == team and fi in reg_idx:
+                won_back, won_x = True, float(e["x"])
+        rows.append({"poss_id": pid, "start_x": p["start_x"], "duration": dur, "won_back": won_back, "won_x": won_x})
+    return pd.DataFrame(rows)
+
+
+@per_match
+def pressing(md: "MatchData", team: str, half: int | None = None) -> dict:
+    """Pressing intensity. PPDA = opponent passes in their own 60 % ÷ our defensive actions in our attacking 60 %
+    when the opponent's passes are tagged; otherwise the possession-based PPDA = opponent possessions that started
+    in their own 60 % ÷ those defensive actions (both: lower = more intense). Plus seconds of opponent possession
+    per defensive action, high regains (defensive actions only) and the share of opponent possessions we won back
+    in their half."""
+    ev = md.events if half is None else md.events[md.events["half"] == half]
+    opp = md.opponent(team)
+    me = ev[ev["team"] == team]
+    op = ev[(ev["team"] == opp) & (ev["etype"] == "pass")]
+    def_zone = me[ppda_mask(me)]
+    nd = len(def_zone)
+    op_poss = _opp_possessions(md, team, half)
+    low = op_poss[op_poss["start_x"] < 0.6 * PITCH_L] if len(op_poss) else op_poss
+    ppda_passes = (len(op[op["x"] < 0.6 * PITCH_L]) / nd) if (nd and len(op)) else float("nan")
+    ppda_poss = (len(low) / nd) if (nd and len(op_poss)) else float("nan")
+    reg = defensive_regains(md, team, half)
+    out = {
+        "PPDA": ppda_passes if ppda_passes == ppda_passes else ppda_poss,
+        "PPDA method": "passes" if ppda_passes == ppda_passes else ("possessions" if ppda_poss == ppda_poss else ""),
+        "PPDA (passes)": ppda_passes,
+        "PPDA (possessions)": ppda_poss,
+        "Seconds per def. action": (float(low["duration"].sum()) / nd) if (nd and len(low)) else float("nan"),
+        "High regains": int((reg["x"] >= PITCH_L / 2).sum()),
+        "High regains (final third)": int((reg["x"] >= md.thirds[1]).sum()),
+        "Opp. possessions won back in their half %": (_pct(int((op_poss["won_back"] & (op_poss["won_x"] >= PITCH_L / 2)).sum()),
+                                                           len(op_poss)) if len(op_poss) else float("nan")),
+    }
+    return out
+
+
+def _press_summary(md: "MatchData", team: str, half) -> dict:
+    return dict(pressing(md, team, half))

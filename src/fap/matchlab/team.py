@@ -141,10 +141,22 @@ def team_stats(md: "MatchData", team: str, half=None) -> pd.DataFrame:
     add("Defending", _row("Blocks", int((ev["etype"] == "block").sum())))
     add("Defending", _row("Presses tagged", int((ev["etype"] == "press").sum())))
     opp_ev = allev[allev["team"] == opp]
-    num = opp_ev[(opp_ev["etype"] == "pass") & (opp_ev["x"] < 0.6 * PITCH_L)]
+    from fap.matchlab.metrics import pressing
+    pr = pressing(md, team, half)
     den = ev[ppda_mask(ev)]
-    add("Defending", _row("PPDA (lower = more intense)", round(len(num) / len(den), 2) if len(den) else np.nan,
-                          note=f"{len(num)} opp. passes / {len(den)} actions"))
+    meth = "opp. passes" if pr["PPDA method"] == "passes" else "opp. possessions (no opponent passes tagged)"
+    add("Defending", _row("PPDA (lower = more intense)", round(pr["PPDA"], 2) if pr["PPDA"] == pr["PPDA"] else np.nan,
+                          note=f"by {meth} / {len(den)} actions"))
+    add("Defending", _row("PPDA by possessions (all matches comparable)",
+                          round(pr["PPDA (possessions)"], 2) if pr["PPDA (possessions)"] == pr["PPDA (possessions)"] else np.nan,
+                          note="opp. possessions started in their 60% / our actions there"))
+    add("Defending", _row("Seconds of opp. possession per def. action",
+                          round(pr["Seconds per def. action"], 1) if pr["Seconds per def. action"] == pr["Seconds per def. action"] else np.nan))
+    add("Defending", _row("High regains (opponent half)", pr["High regains"], note="defensive actions only"))
+    add("Defending", _row("High regains (final third)", pr["High regains (final third)"], note="defensive actions only"))
+    add("Defending", _row("Opp. possessions won back in their half %",
+                          round(pr["Opp. possessions won back in their half %"], 1)
+                          if pr["Opp. possessions won back in their half %"] == pr["Opp. possessions won back in their half %"] else np.nan))
     d = ev[ev["etype"].isin(["tackle", "interception", "recovery", "block", "clearance", "duel", "foul", "press"])]
     add("Defending", _row("Avg defensive action height (m)", round(float(d["x"].mean()), 1) if len(d) else np.nan))
     from fap.matchlab import counterpress as CP

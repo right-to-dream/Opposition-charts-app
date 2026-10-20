@@ -70,6 +70,14 @@ def _mm_combined(sig: str, _items):
     return MM.combine(_items)
 
 
+@st.cache_data(show_spinner=False, max_entries=12)
+def _mm_pool(sig: str, half, positions_json: str, min_minutes: float, by: str, _items, _squad):
+    import json
+    from fap.matchlab import playercompare as PC
+    pool = PC.player_pool(_items, _squad, json.loads(positions_json), half)
+    return PC.add_percentiles(pool, by=by, min_minutes=min_minutes) if len(pool) else pool
+
+
 @st.cache_data(show_spinner=False, max_entries=24)
 def _mm_table(sig: str, player, half, _items, _cm):
     from fap.matchlab import multimatch as MM
@@ -407,13 +415,39 @@ class MatchLabPage(Page):
         who = f"{our}" if player is None else plabel
         table = _mm_table(allsig + f"|{theme}", player, half, items, cm)
 
-        tabs = st.tabs(["Comparison", "Charts", "PDF report"])
+        tabs = st.tabs(["Comparison", "Players", "Charts", "PDF report"])
         with tabs[0]:
-            show = table.copy()
-            st.dataframe(show.style.format(lambda v: "–" if pd.isna(v) else (f"{v:.0f}" if abs(v) >= 100 else f"{v:.1f}")),
-                         use_container_width=True)
-            st.caption("“All matches” is computed on all events together (totals for counts, overall rates for %). "
-                       "“–” = not measurable (e.g. the opponent is not tagged in that file).")
+            st.markdown(f"#### {who} — match scorecard")
+            st.caption("Each column is a match; each cell is coloured green (better) or red (worse) than the average of "
+                       "these matches. “Match average” = mean per match · “All matches” = all events together (totals "
+                       "for counts). “–” = not measurable (e.g. the opponent is not tagged in that file).")
+            sc_title = f"{who} — match scorecard"
+            if player is None:
+                from fap.matchlab.metrics import pressing
+                by_poss = [it.label for it in items if pressing(it.md, it.md.our_team, half)["PPDA method"] == "possessions"]
+                if by_poss:
+                    st.caption("PPDA uses the opponent's passes where they are tagged; in " + ", ".join(by_poss) +
+                               " they are not, so PPDA is computed from the opponent's possessions there. "
+                               "“PPDA (possessions)” uses the possession method in every match — the fair row to compare.")
+            st.image(MM.fig_png(MM.scorecard_figure(table, sc_title, sub, theme=th), 110), use_container_width=True)
+            st.download_button("Scorecard (PNG)", MM.fig_png(MM.scorecard_figure(table, sc_title, sub, theme=th), dpi),
+                               file_name=f"{_fname(who)}_scorecard.png", mime="image/png", key="ml_mm_sc_dl")
+            st.markdown(f"#### {who} — match profiles")
+            r_default = ["Pass accuracy %", "Progressive passes", "Final-third entries", "Box entries", "xG",
+                         "xG against", "Second balls won %", "Counter-pressed %"] if player is None else \
+                        ["Passes", "Pass accuracy %", "Progressive passes", "Key passes", "Defensive actions",
+                         "Recoveries", "Duels won", "Ball losses"]
+            rmets = st.multiselect("Radar — metrics", list(table.index), default=[m for m in r_default if m in table.index],
+                                   key=f"ml_mm_radar_{scope}")
+            if len(rmets) >= 3:
+                r_title = f"{who} — match profiles"
+                c_r = st.columns([1, 2, 1])[1]
+                c_r.image(MM.fig_png(MM.match_radar(table, rmets, r_title, sub, theme=th), 100), use_container_width=True)
+                c_r.download_button("Radar (PNG)", MM.fig_png(MM.match_radar(table, rmets, r_title, sub, theme=th), dpi),
+                                    file_name=f"{_fname(who)}_match_radar.png", mime="image/png", key="ml_mm_radar_dl")
+            else:
+                st.caption("Pick at least 3 metrics for the radar.")
+            st.markdown(f"#### {who} — trend across matches")
             default = ["Pass accuracy %", "Progressive passes", "xG", "Second balls won %", "Counter-pressed %",
                        "Build-ups reaching final third %"] if player is None else \
                       ["Passes", "Pass accuracy %", "Progressive passes", "Defensive actions", "Second balls won", "Ball losses"]
@@ -446,8 +480,11 @@ class MatchLabPage(Page):
             comb, _ = _png(allsig, key, our, half, pl, theme, tuple(sorted(opts.items())), dpi_, cm)
             return out, comb
 
-        valid = {k: v for k, v in MM_CHARTS.items() if not (k == "player" and player is None)}
         with tabs[1]:
+            self._mm_players(shell, items, allsig, ref, half, theme, th, dpi)
+
+        valid = {k: v for k, v in MM_CHARTS.items() if not (k == "player" and player is None)}
+        with tabs[2]:
             pick_default = ["pass_map", "heat_activity"] if player else ["buildup", "pass_map"]
             chosen = st.multiselect("Charts to compare", list(valid), default=pick_default, max_selections=6,
                                     format_func=lambda k: valid[k][2], key=f"ml_mm_charts_{scope}")
@@ -505,14 +542,14 @@ class MatchLabPage(Page):
                                           mime="application/zip", key=f"ml_mm_dlz_{cid}", use_container_width=True)
                 st.divider()
 
-        with tabs[2]:
-            st.caption("A PDF with a cover, the comparison table, the trend and every chart you pick "
+        with tabs[3]:
+            st.caption("A PDF with a cover, the scorecard, the trend and every chart you pick "
                        "(match by match and / or all matches combined).")
             charts_pdf = st.multiselect("Charts in the report", list(valid),
                                         default=st.session_state.get(f"ml_mm_charts_{scope}", []) or ["pass_map"],
                                         format_func=lambda k: valid[k][2], key=f"ml_mm_pdf_charts_{scope}")
             cc = st.columns(4)
-            inc_tab = cc[0].checkbox("Comparison table", True, key="ml_mm_pdf_tab")
+            inc_tab = cc[0].checkbox("Scorecard + radar", True, key="ml_mm_pdf_tab")
             inc_trend = cc[1].checkbox("Trend", True, key="ml_mm_pdf_trend")
             inc_per = cc[2].checkbox("Match by match", True, key="ml_mm_pdf_per")
             inc_comb = cc[3].checkbox("All matches combined", True, key="ml_mm_pdf_comb")
@@ -522,8 +559,12 @@ class MatchLabPage(Page):
                 pages = []
                 with st.spinner("Building the report…"):
                     if inc_tab:
-                        pages.append(("Match by match", MM.fig_png(MM.table_figure(table, f"{who} — match by match", sub,
-                                                                                   theme=th), 200)))
+                        pages.append(("Match scorecard", MM.fig_png(MM.scorecard_figure(table, f"{who} — match scorecard",
+                                                                                        sub, theme=th), 200)))
+                        rm = st.session_state.get(f"ml_mm_radar_{scope}") or []
+                        if len(rm) >= 3:
+                            pages.append(("Match profiles", MM.fig_png(MM.match_radar(table, rm, f"{who} — match profiles",
+                                                                                      sub, theme=th), 200)))
                     if inc_trend:
                         mets = st.session_state.get(f"ml_mm_trend_{scope}") or list(table.index[:6])
                         pages.append(("Trend", MM.fig_png(MM.trend_figure(table, mets, f"{who} — trend across matches",
@@ -541,6 +582,144 @@ class MatchLabPage(Page):
             if got and got[0] == stamp:
                 st.download_button("Download PDF report", got[1], file_name=f"{_fname(who)}_multi_match_report.pdf",
                                    mime="application/pdf", key="ml_mm_pdf_dl", type="primary")
+
+    # ---- multi-match: player comparison ---------------------------------------
+    def _mm_players(self, shell, items, allsig: str, ref, half, theme: str, th, dpi: int) -> None:
+        import json
+        from fap.matchlab import multimatch as MM
+        from fap.matchlab import playercharts as PCH
+        from fap.matchlab import playercompare as PC
+        st.caption("Every player of the analysed team over these matches: minutes from the Sub in / Sub out tags, every "
+                   "count per 90, and percentiles against the same position or the whole team.")
+        pos_key = "_ml_mm_positions"
+        if pos_key not in st.session_state:
+            st.session_state[pos_key] = {}
+            wm = getattr(shell, "wm", None)
+            if wm is not None:
+                try:
+                    pres = wm.list_presets(shell.user, kind="matchlab_positions")
+                    if pres:
+                        st.session_state[pos_key] = dict((getattr(pres[0], "document", None) or {}).get("positions", {}))
+                except Exception:
+                    pass
+        positions = st.session_state[pos_key]
+        c = st.columns([1.4, 1.6, 1.4])
+        min_min = c[0].slider("Minimum minutes for percentiles", 0, 450, 90, 15, key="ml_mm_minmin")
+        by = c[1].radio("Percentiles against", ["Same position", "Whole team"], horizontal=True, key="ml_mm_pctby")
+        by_key = "position" if by == "Same position" else "team"
+        pp = _mm_pool(allsig, half, json.dumps(positions, sort_keys=True), float(min_min), by_key, items, ref.squad)
+        if pp is None or pp.empty:
+            st.info("No players with tagged actions in these matches.")
+            return
+        with st.expander("Positions (from the squad file — edit to compare by finer roles)", expanded=False):
+            ed = st.data_editor(pd.DataFrame({"Player": pp["Player"], "player": pp["player"], "Position": pp["Position"]}),
+                                column_config={"player": None, "Position": st.column_config.SelectboxColumn(
+                                    options=sorted(set(PC.POSITION_CHOICES) | set(pp["Position"])))},
+                                disabled=["Player"], hide_index=True, use_container_width=True, key="ml_mm_pos_editor")
+            new_pos = {r["player"]: r["Position"] for _, r in ed.iterrows()}
+            b = st.columns([1, 1, 3])
+            if b[0].button("Apply positions", key="ml_mm_pos_apply", type="primary"):
+                st.session_state[pos_key] = new_pos
+                st.rerun()
+            wm = getattr(shell, "wm", None)
+            if wm is not None and b[1].button("Save positions", key="ml_mm_pos_save"):
+                try:
+                    wm.save_preset(shell.user, kind="matchlab_positions", name="Positions", document={"positions": new_pos})
+                    st.toast("Positions saved.")
+                except Exception as exc:
+                    st.toast(f"Save failed: {exc}")
+        pool_label = "the same position" if by_key == "position" else "the whole team"
+        sub_t = st.tabs(["Table", "Player profile", "Compare players", "Scatter", "Rankings"])
+        metric_labels = [m.label for m in PC.METRICS]
+
+        def dl(label, fig_fn, fname, key):
+            st.download_button(label, MM.fig_png(fig_fn(), dpi), file_name=f"{_fname(fname)}.png", mime="image/png",
+                               key=key, icon=":material/download:")
+
+        with sub_t[0]:
+            pos_f = st.multiselect("Positions", sorted(pp["Position"].unique()), key="ml_mm_tbl_pos")
+            view = st.radio("Show", ["Per 90", "Percentiles", "Totals"], horizontal=True, key="ml_mm_tbl_view")
+            d = pp if not pos_f else pp[pp["Position"].isin(pos_f)]
+            base_cols = ["Player", "Position", "Matches", "Starts", "Minutes"]
+            if view == "Per 90":
+                cols = {m.column: m.label for m in PC.METRICS}
+            elif view == "Percentiles":
+                cols = {f"pct:{m.label}": m.label for m in PC.METRICS}
+            else:
+                cols = {c_: c_ for c_ in ("Passes", "Passes completed", "Progressive passes", "Progressive carries",
+                                          "Key passes", "Shots", "xG", "Defensive actions", "Recoveries", "Duels won",
+                                          "Second balls won", "Ball losses")}
+            tdf = d[base_cols + list(cols)].rename(columns=cols)
+            sty = tdf.style.format(precision=2, na_rep="–").format({"Minutes": "{:.0f}"})
+            if view == "Percentiles":
+                sty = sty.background_gradient(cmap="RdYlGn", vmin=0, vmax=100, subset=list(cols.values())).format(
+                    precision=0, na_rep="–", subset=list(cols.values()))
+            st.dataframe(sty, use_container_width=True, hide_index=True, height=min(640, 60 + 35 * len(tdf)))
+            st.download_button("Table (CSV)", tdf.round(3).to_csv(index=False).encode("utf-8-sig"),
+                               file_name=f"players_{view.lower().replace(' ', '_')}.csv", mime="text/csv",
+                               key="ml_mm_tbl_csv")
+        labels = {r["player"]: f"{r['Player']} · {r['Position']} · {r['Minutes']:.0f} min" for _, r in pp.iterrows()}
+        with sub_t[1]:
+            pk = st.selectbox("Player", list(labels), format_func=labels.get, key="ml_mm_prof_pl")
+            row = pp[pp["player"] == pk].iloc[0]
+            pl_pool = (f"{row['Position']} players" if by_key == "position" else "the whole team") + \
+                      f" ({int(row['Pool size'])} with ≥ {min_min} min)"
+            c1, c2 = st.columns(2)
+            with c1:
+                st.image(MM.fig_png(PCH.percentile_profile(pp, pk, pool_label=pl_pool, theme=th), 100),
+                         use_container_width=True)
+                dl("Profile (PNG)", lambda: PCH.percentile_profile(pp, pk, pool_label=pl_pool, theme=th),
+                   f"{row['Player']}_percentile_profile", "ml_mm_prof_dl")
+            with c2:
+                av = PC.position_averages(pp, float(min_min))
+                st.image(MM.fig_png(PCH.vs_position(pp, pk, av, theme=th), 100), use_container_width=True)
+                dl("Vs position (PNG)", lambda: PCH.vs_position(pp, pk, av, theme=th),
+                   f"{row['Player']}_vs_position", "ml_mm_vspos_dl")
+        with sub_t[2]:
+            keys = st.multiselect("Players (2–4)", list(labels), format_func=labels.get, max_selections=4,
+                                  default=list(labels)[:2], key="ml_mm_cmp_pl")
+            mets = st.multiselect("Metrics", metric_labels, key="ml_mm_cmp_metrics",
+                                  default=["Passes", "Pass accuracy %", "Progressive passes", "Key passes",
+                                           "Defensive actions", "Recoveries", "Duels won", "Ball losses"])
+            if len(keys) >= 2 and len(mets) >= 3:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.image(MM.fig_png(PCH.compare_radar(pp, keys, mets, pool_label=pool_label, theme=th), 100),
+                             use_container_width=True)
+                    dl("Radar (PNG)", lambda: PCH.compare_radar(pp, keys, mets, pool_label=pool_label, theme=th),
+                       "players_radar", "ml_mm_cmp_radar_dl")
+                with c2:
+                    st.image(MM.fig_png(PCH.compare_bars(pp, keys, mets, pool_label=pool_label, theme=th), 100),
+                             use_container_width=True)
+                    dl("Per 90 bars (PNG)", lambda: PCH.compare_bars(pp, keys, mets, pool_label=pool_label, theme=th),
+                       "players_per90", "ml_mm_cmp_bars_dl")
+                cmp = pp[pp["player"].isin(keys)].set_index("Player")
+                rows_ = {m: [f"{PC.fmt(PC.METRIC_BY_LABEL[m], cmp.at[p, PC.METRIC_BY_LABEL[m].column])}"
+                             + (f" ({cmp.at[p, 'pct:' + m]:.0f})" if cmp.at[p, "pct:" + m] == cmp.at[p, "pct:" + m] else "")
+                             for p in cmp.index] for m in mets}
+                st.dataframe(pd.DataFrame(rows_, index=cmp.index).T, use_container_width=True)
+                st.caption("Value per 90 (or %) · percentile in brackets.")
+            else:
+                st.caption("Pick 2–4 players and at least 3 metrics.")
+        with sub_t[3]:
+            c3 = st.columns(3)
+            mx = c3[0].selectbox("X axis", metric_labels, index=metric_labels.index("Progressive passes"), key="ml_mm_sc_x")
+            my = c3[1].selectbox("Y axis", metric_labels, index=metric_labels.index("Defensive actions"), key="ml_mm_sc_y")
+            hl = c3[2].multiselect("Highlight", list(labels), format_func=labels.get, key="ml_mm_sc_hl")
+            st.image(MM.fig_png(PCH.scatter(pp, mx, my, highlight=hl, min_minutes=float(min_min), theme=th), 100),
+                     use_container_width=True)
+            dl("Scatter (PNG)", lambda: PCH.scatter(pp, mx, my, highlight=hl, min_minutes=float(min_min), theme=th),
+               f"scatter_{mx}_{my}", "ml_mm_pl_scatter_dl")
+        with sub_t[4]:
+            c4 = st.columns(3)
+            mr = c4[0].selectbox("Metric", metric_labels, key="ml_mm_rk_m")
+            pos_r = c4[1].selectbox("Position", ["All"] + sorted(pp["Position"].unique()), key="ml_mm_rk_pos")
+            hl2 = c4[2].multiselect("Highlight", list(labels), format_func=labels.get, key="ml_mm_rk_hl")
+            pos_v = None if pos_r == "All" else pos_r
+            st.image(MM.fig_png(PCH.ranking(pp, mr, position=pos_v, min_minutes=float(min_min), highlight=hl2, theme=th),
+                                100), use_container_width=True)
+            dl("Ranking (PNG)", lambda: PCH.ranking(pp, mr, position=pos_v, min_minutes=float(min_min), highlight=hl2,
+                                                    theme=th), f"ranking_{mr}", "ml_mm_rk_dl")
 
     # ---- source ------------------------------------------------------------
     def _source(self, shell, can_edit: bool) -> None:
@@ -581,7 +760,10 @@ class MatchLabPage(Page):
             C.metric_card_html("Passing", _fmt(a["Pass accuracy %"], 0, True), hint=f"{a['Passes']} passes"),
             C.metric_card_html("Progressive", f"{a['Progressive passes']} + {a['Progressive carries']}", hint="passes + carries"),
             C.metric_card_html("Entries", f"{a['Final-third entries']} · {a['Box entries']}", hint="final third · box"),
-            C.metric_card_html("PPDA", _fmt(a["PPDA"], 1), hint=f"Def. height {_fmt(a['Def. action height (m)'], 1)} m"),
+            C.metric_card_html("PPDA" + (" · by possessions" if a.get("PPDA method") == "possessions" else ""),
+                               _fmt(a["PPDA"], 1),
+                               hint=(f"no opponent passes tagged · " if a.get("PPDA method") == "possessions" else "")
+                               + f"Def. height {_fmt(a['Def. action height (m)'], 1)} m"),
         ]
         C.render_metric_row(cards)
 

@@ -494,10 +494,69 @@ def test_multimatch_combine_table_and_outputs(md, proxy):
     pid = cm.possessions["poss_id"]
     assert pid.is_unique
     tb = MM.comparison_table(items, cm)
-    assert list(tb.columns) == ["1. A", "2. B", "All matches"]
+    assert list(tb.columns) == ["1. A", "2. B", "Match average", "All matches"]
     assert tb.loc["Passes", "All matches"] == tb.loc["Passes", "1. A"] + tb.loc["Passes", "2. B"]
     png = CH.to_png(CH.render("pass_map", cm, cm.teams[0]), dpi=30)
     grid = MM.grid_png([("1. A", png), ("2. B", png)], "t", "s")
     pdf = MM.pdf_report("t", "s", ["1. A", "2. B"], [("grid", grid),
                         ("trend", MM.fig_png(MM.trend_figure(tb, ["Passes"], "t"), 40))])
     assert grid[1:4] == b"PNG" and pdf[:4] == b"%PDF"
+
+
+def test_player_comparison_minutes_per90_percentiles(md, proxy):
+    from fap.matchlab import multimatch as MM
+    from fap.matchlab import playercharts as PCH
+    from fap.matchlab import playercompare as PC
+    mins = PC.minutes_played(proxy, proxy.teams[0])
+    assert (mins["minutes"] >= 0).all() and mins["started"].dtype == bool
+    items = [MM.MatchItem("1. A", md, "a"), MM.MatchItem("2. B", proxy, "b")]
+    pool = PC.player_pool(items)
+    assert len(pool) and (pool["Matches"] >= 1).all()
+    r = pool[pool["Minutes"] > 0].iloc[0]
+    assert abs(r["Passes p90"] - r["Passes"] / r["Minutes"] * 90) < 1e-6          # per 90 is exact
+    pp = PC.add_percentiles(pool, by="team", min_minutes=0)
+    p = pp["pct:Passes"].dropna()
+    assert p.between(0, 100).all() and p.max() == 100
+    worst = pp.loc[pp["Ball losses p90"].idxmax(), "pct:Ball losses"]
+    assert worst == pp["pct:Ball losses"].min()                                    # lower-is-better inverted
+    keys = list(pp["player"][:2])
+    for fig in (PCH.percentile_profile(pp, keys[0], pool_label="team"),
+                PCH.compare_radar(pp, keys, ["Passes", "Pass accuracy %", "Ball losses"], pool_label="team"),
+                PCH.compare_bars(pp, keys, ["Passes", "Ball losses"], pool_label="team"),
+                PCH.scatter(pp, "Passes", "Defensive actions", min_minutes=0),
+                PCH.ranking(pp, "Passes", min_minutes=0),
+                PCH.vs_position(pp, keys[0], PC.position_averages(pp, 0))):
+        assert MM.fig_png(fig, 30)[1:4] == b"PNG"
+
+
+def test_match_scorecard_and_radar(md, proxy):
+    from fap.matchlab import multimatch as MM
+    items = [MM.MatchItem("1. A", md, "a"), MM.MatchItem("2. B", proxy, "b")]
+    tb = MM.comparison_table(items, MM.combine(items))
+    assert "Match average" in tb.columns and "xG against" in tb.index
+    assert MM.metric_group("PPDA") == "Pressing" and MM.metric_group("xG against") == "Defending"
+    assert MM.fig_png(MM.scorecard_figure(tb, "t"), 30)[1:4] == b"PNG"
+    assert MM.fig_png(MM.match_radar(tb, ["Passes", "xG", "Shots", "PPDA"], "t"), 30)[1:4] == b"PNG"
+
+
+def test_ppda_falls_back_to_possessions_and_regains_are_defensive(md):
+    from fap.matchlab import metrics as M
+    team = md.teams[0]
+    pr = M.pressing(md, team)
+    assert pr["PPDA method"] in ("passes", "possessions", "")          # "" = no defensive action in the zone
+    if pr["PPDA method"] == "passes":
+        assert pr["PPDA"] == pr["PPDA (passes)"]
+    elif pr["PPDA method"] == "possessions":
+        assert pr["PPDA"] == pr["PPDA (possessions)"]
+    reg = M.defensive_regains(md, team)
+    assert reg["etype"].isin(["recovery", "interception", "tackle"]).all()
+    assert pr["High regains"] == int((reg["x"] >= 52.5).sum())
+    # remove the opponent's passes → PPDA is computed from their possessions instead
+    import copy
+    md2 = copy.copy(md)
+    md2.__dict__ = dict(md.__dict__)
+    md2.__dict__.pop("_memo", None)
+    opp = md.opponent(team)
+    md2.events = md.events[~((md.events["team"] == opp) & (md.events["etype"] == "pass"))]
+    pr2 = M.pressing(md2, team)
+    assert pr2["PPDA method"] in ("possessions", "") and pr2["PPDA (passes)"] != pr2["PPDA (passes)"]
