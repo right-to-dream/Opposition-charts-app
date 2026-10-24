@@ -7,6 +7,11 @@ Expected shape (column names matched case-insensitively):
   * ``x_<type>`` / ``y_<type>`` — landing point of THAT type (metres, 105 × 68). A cell may hold several
     comma-separated values ("101, 80, 80"): the first is the main landing point, the others are extra
     points of the same set piece (kept and drawn, flagged as extra).
+  * or plain coordinates: ``X`` / ``Y`` (where the set piece is taken) + ``X2`` / ``Y2`` (where it lands) and
+    ``Second ball_X`` / ``Second ball_Y`` (where the second ball is played) — attacking team's view, goal at x = 105;
+  * ``Goal across`` / ``Goal Height`` — placement in the goal (direct free kicks, penalties);
+  * player columns (``1st contact playerwinner`` / ``1st contact loss player``) — the team's player who won /
+    lost the first contact; ``Opponent`` / ``Match`` / ``Game`` — which match the set piece is from;
   * every other non-empty column is a qualifier ("1st contact", "2nd ball", "Area", "Execution",
     "Location", "Outcome", "Efficiency" ...) — detected automatically, nothing hard-coded.
 
@@ -150,6 +155,12 @@ _SECOND = ("second ball", "2nd ball", "second", "2nd")
 # outcome words, most dangerous first — the set piece's overall Result is the most dangerous one coded
 RESULT_RANK = ("goal", "shot", "threat", "cross", "recycle", "foul won", "corner won", "gk punch", "gk claim",
                "clearance", "foul", "out of bounds", "out")
+# a "Shot Outcome" value other than Goal means there WAS a shot
+SHOT_WORDS = {"saved", "off target", "on target", "blocked", "blocked by wall", "post", "woodwork", "wide", "over",
+              "hit post", "save"}
+_MATCH = ("opponent", "opposition", "match", "game", "vs", "versus", "against", "fixture")
+_PLAIN_X, _PLAIN_Y = ("x", "x1", "start x", "x start"), ("y", "y1", "start y", "y start")
+_PLAIN_X2, _PLAIN_Y2 = ("x2", "end x", "x end"), ("y2", "end y", "y end")
 _GOAL_X = ("goal across", "goal x", "goal_x", "across")
 _GOAL_Y = ("goal height", "goal y", "goal_y", "height")
 _TAKER = ("taker", "kicker", "thrower", "player")
@@ -196,11 +207,13 @@ def _split(v: str) -> list[str]:
 
 
 def _result_of(values: list[str]) -> str:
-    """Most dangerous outcome among the coded ones ('Threat, Shot' → Shot)."""
+    """Most dangerous outcome among the coded ones ('Threat, Shot' → Shot; a shot 'Saved' → Shot)."""
     best, best_rank = "", len(RESULT_RANK) + 1
     for v in values:
         for part in _split(v):
             k = _clean_qual(part).lower()
+            if k in SHOT_WORDS:
+                k, part = "shot", "Shot"
             rank = RESULT_RANK.index(k) if k in RESULT_RANK else len(RESULT_RANK)
             if rank < best_rank:
                 best, best_rank = _clean_qual(part), rank
@@ -218,7 +231,18 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
     gx_col = next((c for c in raw.columns if _key(c) in _GOAL_X), None)
     gy_col = next((c for c in raw.columns if _key(c) in _GOAL_Y), None)
     taker_col = next((c for c in raw.columns if _key(c) in _TAKER), None)
-    coord_set = set(xcols.values()) | set(ycols.values()) | {gx_col, gy_col, taker_col}
+    # plain coordinates: X / Y = where it is taken, X2 / Y2 = where it lands ("<something> X" = second ball)
+    pick = lambda names: next((c for c in raw.columns if _key(c) in names), None)  # noqa: E731
+    px, py, px2, py2 = pick(_PLAIN_X), pick(_PLAIN_Y), pick(_PLAIN_X2), pick(_PLAIN_Y2)
+    sb_plain = {}
+    for c in raw.columns:
+        m = re.match(r"^(.+?)\s*[_\-\s]\s*([xy])$", _key(c))
+        if m and _is_second(m.group(1)):
+            sb_plain[m.group(2)] = c
+    match_col = next((c for c in raw.columns if _key(c) in _MATCH and raw[c].notna().any()), None)
+    player_cols = [c for c in raw.columns if "player" in _key(c) and c != taker_col]
+    coord_set = (set(xcols.values()) | set(ycols.values()) | {gx_col, gy_col, taker_col, px, py, px2, py2, match_col}
+                 | set(sb_plain.values()) | set(player_cols))
     qual_cols = [c for c in raw.columns if _key(c) not in _META and c not in coord_set and raw[c].notna().any()]
     df = pd.DataFrame({
         "row": row,
@@ -234,6 +258,14 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
     df["variant"] = row.map(variant_of)
     df["taker"] = (raw[taker_col].map(lambda v: "" if pd.isna(v) else str(int(v)) if isinstance(v, float) and v.is_integer()
                                       else str(v).strip()) if taker_col is not None else "")
+    num = lambda v: "" if pd.isna(v) else str(int(v)) if isinstance(v, float) and v.is_integer() else str(v).strip()  # noqa: E731
+    df["match"] = raw[match_col].map(lambda v: "" if pd.isna(v) else str(v).strip()) if match_col is not None else ""
+    df["fc_won_by"], df["fc_lost_by"] = "", ""
+    for c in player_cols:
+        k = _key(c)
+        dest = "fc_lost_by" if ("los" in k or "lost" in k) else "fc_won_by" if ("win" in k or "won" in k) else None
+        if dest:
+            df[dest] = raw[c].map(num)
     df["goal_x_m"] = pd.to_numeric(raw[gx_col], errors="coerce") if gx_col is not None else np.nan
     df["goal_y_m"] = pd.to_numeric(raw[gy_col], errors="coerce") if gy_col is not None else np.nan
     for c in qual_cols:
@@ -292,6 +324,24 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
         sb = parse_points(raw.at[ri, xcols[sb_kind]], raw.at[ri, ycols[sb_kind]]) if sb_kind else []
         sbx.append(sb[0][0] if sb else np.nan)
         sby.append(sb[0][1] if sb else np.nan)
+    df["ox"], df["oy"] = np.nan, np.nan
+    if px2 is not None and py2 is not None:          # plain: X2 / Y2 = landing, X / Y = where it was taken
+        lx, ly = pd.to_numeric(raw[px2], errors="coerce"), pd.to_numeric(raw[py2], errors="coerce")
+        pts = [p if p else ([(float(a), float(b))] if pd.notna(a) and pd.notna(b) else [])
+               for p, a, b in zip(pts, lx.to_numpy(), ly.to_numpy())]
+        if px is not None and py is not None:
+            df["ox"] = pd.to_numeric(raw[px], errors="coerce").to_numpy()
+            df["oy"] = pd.to_numeric(raw[py], errors="coerce").to_numpy()
+        notes.append(f"Landing point from '{px2}' / '{py2}'" + (f", taken from '{px}' / '{py}'" if px is not None else "") + ".")
+    elif px is not None and py is not None:          # plain X / Y only = landing
+        lx, ly = pd.to_numeric(raw[px], errors="coerce"), pd.to_numeric(raw[py], errors="coerce")
+        pts = [p if p else ([(float(a), float(b))] if pd.notna(a) and pd.notna(b) else [])
+               for p, a, b in zip(pts, lx.to_numpy(), ly.to_numpy())]
+    if not sb_kind and {"x", "y"} <= set(sb_plain):
+        sbx = list(pd.to_numeric(raw[sb_plain["x"]], errors="coerce").to_numpy())
+        sby = list(pd.to_numeric(raw[sb_plain["y"]], errors="coerce").to_numpy())
+        notes.append(f"Second-ball location from '{sb_plain['x']}' / '{sb_plain['y']}' "
+                     f"({int(pd.notna(pd.Series(sbx)).sum())} coded).")
     df["points"] = pts
     df["x"] = [p[0][0] if p else np.nan for p in pts]
     df["y"] = [p[0][1] if p else np.nan for p in pts]
@@ -301,7 +351,44 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
     loc = next((q for q in quals if q.lower() in ("location", "side")), None)
     side = df[loc].str.title() if loc else pd.Series("", index=df.index)
     df["side"] = side.where(side.isin(["Left", "Right"]), df["landing_side"])
-    missing_xy = sorted({r for r in df["row"].unique() if not kinds_for(_key(r))})
+    # corners without a coded origin: the corner flag of their side (learnt from the coded ones)
+    cor = df["category"].eq("Corner")
+    known = df[cor & df["oy"].notna() & df["side"].isin(["Left", "Right"])]
+    if len(known) and cor.any():
+        left_high = bool(known[known["side"] == "Left"]["oy"].mean() > PITCH_W / 2) if (known["side"] == "Left").any() \
+            else not bool(known[known["side"] == "Right"]["oy"].mean() > PITCH_W / 2)
+        fill = cor & df["ox"].isna() & df["side"].isin(["Left", "Right"])
+        df.loc[fill, "ox"] = PITCH_L
+        df.loc[fill, "oy"] = np.where((df.loc[fill, "side"] == "Left") == left_high, PITCH_W, 0.0)
+    # throw-ins without "long" / "short" in the name: long if most land in the box
+    thr = df["category"].eq("Throw-in") & ~df["row"].str.lower().str.contains("long|short")
+    for r_ in df.loc[thr, "row"].unique():
+        g_ = df[df["row"] == r_]
+        ph_ = df[df["phase"] == g_["phase"].iloc[0]]
+        if ph_["row"].str.lower().str.contains("long").any():   # a separate long-throw type exists → keep as coded
+            continue
+        land = g_[g_["x"].notna()]
+        if len(land) and float(((land["x"] >= PITCH_L - 16.5) & ((land["y"] - PITCH_W / 2).abs() <= 20.16)).mean()) >= 0.6:
+            df.loc[df["row"] == r_, "variant"] = "Long"
+            notes.append(f"'{r_}' treated as LONG throw-ins ({len(land)} land in / near the box).")
+    if match_col is not None:
+        notes.append(f"Match from '{match_col}' ({df['match'].replace('', np.nan).nunique()} matches).")
+    # shot outcome + flags used everywhere (a shot = any coded shot outcome or a Shot / Goal result)
+    so = next((q for q in quals if q.lower() in ("shot outcome", "shot result")), None)
+    if so:
+        v = df[so].str.lower()
+        df["shot_outcome"] = np.where(v.eq("goal"), "Goal", np.where(v.isin(SHOT_WORDS), df[so], ""))
+    else:
+        df["shot_outcome"] = ""
+    if RESULT_COL in df:
+        r_ = df[RESULT_COL].str.lower()
+        df.loc[r_.eq("goal") & df["shot_outcome"].eq(""), "shot_outcome"] = "Goal"
+        df["is_goal"] = r_.eq("goal")
+        df["is_shot"] = r_.isin(["goal", "shot"]) | df["shot_outcome"].ne("")
+    else:
+        df["is_goal"] = df["shot_outcome"].eq("Goal")
+        df["is_shot"] = df["shot_outcome"].ne("")
+    missing_xy = sorted({r for r in df["row"].unique() if not kinds_for(_key(r))}) if px is None and px2 is None else []
     if missing_xy:
         notes.append("No landing-point columns for: " + ", ".join(missing_xy))
     if sb_kind:

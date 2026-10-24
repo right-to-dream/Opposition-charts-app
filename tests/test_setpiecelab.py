@@ -209,3 +209,65 @@ def test_v2_variants_sides_takers_goal_and_typo_coords():
     for fig in (S.takers_chart(sd, sd.df, "t"), S.goal_placement(sd, "Penalty"),
                 S.compare_groups(sd, [("A", df[:2]), ("B", df[2:])], "t", lines=["**x** y"])):
         assert S.png(fig, 30)[1:4] == b"PNG"
+
+
+def _plain_matrix():
+    """The 'plain coordinates' export: X/Y taken from, X2/Y2 landing, second ball, players at the 1st contact."""
+    rows = [
+        # Row, opp, 1st, 1st out, 2nd, 2nd out, Area, Exec, Loc, Taker, won by, lost by, X, Y, X2, Y2, Shot, sbx, sby
+        ("Offensive Corner", "A", "Yes", "Shot", None, None, "Far Post", "Inswing", "Left", 18, 11, None, 105, 67.84, 98.3, 26.9, "Off target", None, None),
+        ("Offensive Corner", "A", "Yes", "Threat", "Yes", "Shot", "Near Post", "Short", "Left", 18, 25, None, 105, 67.84, 99.6, 43.2, "Goal", 96.2, 31.8),
+        ("Offensive Corner", "B", "No", "Cleareance", "No", "Cleareance", "Near Post", "Inswing", "Right", 22, None, None, None, None, 103.8, 25.7, None, 91.2, 40.3),
+        ("Defensive Corner", "A", "No", "Shot", None, None, "Near Post", "Inswing", "Right", None, None, 24, None, None, 99.4, 30.8, "Goal", None, None),
+        ("Defensive Corner", "B", "Yes", "Cleareance", "No", "Cross", "Near Post", "Inswing", "Right", None, 1, None, None, None, 102.8, 35.5, None, 101.4, 53.1),
+        ("Def Throw in", "B", "Yes", "Cleareance", "No", "Cross", "Near Post", None, "Right", None, 3, None, None, None, 100.7, 32.8, "Goal", None, None),
+        ("Def Throw in", "B", "No", "Threat", "No", "Shot", "Near Post", None, None, None, None, 29, None, None, 101.8, 27.5, None, None, None),
+        ("Penalty", "A", None, None, None, None, None, None, None, 22, None, None, None, None, None, None, "Goal", None, None),
+        ("Penalty Against", "B", None, None, None, None, None, None, None, None, None, None, None, None, None, None, "Saved", None, None),
+    ]
+    cols = ["Row", "Opponent", "1st contact", "1st contact Outcome", "2nd ball", "2nd contact Outcome", "Area", "Execution",
+            "Location", "Taker", "1st contact  playerwinner", "1st contact loss player", "X", "Y", "X2", "Y2",
+            "Shot Outcome", "Second ball_X", "Second ball_Y"]
+    df = pd.DataFrame(rows, columns=cols)
+    df["Original Instance"] = df["Row"] + ": " + (df.groupby("Row").cumcount() + 1).astype(str)
+    df["Goal across"] = [None] * 7 + [0.6, 1.5]
+    df["Goal Height"] = [None] * 7 + [2.1, 0.9]
+    return df
+
+
+def test_plain_coordinates_players_matches_and_shots():
+    from fap.setpiecelab.loader import load_setpieces
+    sd = load_setpieces(_plain_matrix(), "plain.xlsx", team="Masar")
+    for q in ("X", "Y", "X2", "Y2", "Opponent", "1st contact  playerwinner", "Second ball_X"):
+        assert q not in sd.qualifiers
+    oc = sd.of(row="Offensive Corner")
+    assert oc["x"].notna().all() and oc.iloc[0]["ox"] == 105 and oc.iloc[0]["x"] == 98.3
+    assert oc.iloc[2]["oy"] == 0.0                         # right corner origin learnt from the coded left ones
+    assert oc["sb_x"].notna().sum() == 2 and list(oc["fc_won_by"]) == ["11", "25", ""]
+    assert set(sd.df["match"]) == {"A", "B"}
+    assert sd.of(row="Def Throw in")["variant"].eq("Long").all()
+    att, de = sd.df[sd.df["phase"] == "Attacking"], sd.df[sd.df["phase"] == "Defending"]
+    assert int(att["is_goal"].sum()) == 2 and int(att["is_shot"].sum()) == 3      # corner goal + penalty, + 1 off target
+    assert int(de["is_goal"].sum()) == 2 and int(de["is_shot"].sum()) == 4        # saved penalty = a shot, not a goal
+
+
+def test_deep_tables_insights_and_report():
+    from fap.setpiecelab import deep as D
+    from fap.setpiecelab.loader import load_setpieces
+    from fap.setpiecelab.report import ReportOptions, build_report
+    sd = load_setpieces(_plain_matrix(), "plain.xlsx", team="Masar")
+    oc = sd.of(row="Offensive Corner")
+    assert D.funnel(sd, oc, True) == [("Taken", 3), ("1st contact won", 2), ("Shot", 2), ("On target", 1), ("Goal", 1)]
+    st = D.shots_table(sd, oc).set_index("Source")
+    assert st.loc["1st contact", "Shots"] == 1 and st.loc["2nd ball", "Goals"] == 1
+    z = D.zone_table(sd, oc).set_index("Zone")
+    assert z.loc["Box · far side", "Deliveries"] == 1 and z.loc["Box · near side", "Goals"] == 1
+    pl = D.players(sd, sd.df[sd.df["phase"] == "Defending"]).set_index("Player")
+    assert pl.loc["#24", "Goals after his loss"] == 1 and pl.loc["#3", "Won"] == 1
+    bm = D.by_match(sd)
+    assert set(bm["Match"]) == {"A", "B"} and bm["Goals"].sum() == 4
+    text = " ".join(i.text for i in D.all_insights(sd))
+    assert "2 goals" in text and "Goal conceded" in text
+    o = ReportOptions(dpi=40, match_insights=True)
+    pdf = build_report(sd, o)
+    assert pdf[:4] == b"%PDF" and not o.log

@@ -90,6 +90,35 @@ def _png_button(label: str, data_fn, fname: str, key: str) -> None:
                        icon=":material/download:")
 
 
+def _static_fig(key: str, make, fname: str, bkey: str) -> None:
+    """A static chart (cached PNG) on screen + its PNG download."""
+    try:
+        data = _cached_png(key, make)
+    except Exception as exc:  # pragma: no cover
+        st.caption(f"Chart unavailable: {exc}")
+        return
+    st.image(data, use_container_width=True)
+    st.download_button("Download PNG", data, file_name=f"{_fname(fname)}.png", mime="image/png", key=f"spl_png_{bkey}",
+                       icon=":material/download:")
+
+
+_TONE = {"strength": ("#16a34a", "Strength"), "concern": ("#dc2626", "Watch"), "note": ("#3b82f6", "Note")}
+
+
+def _render_insights(items, group: bool = False) -> None:
+    import html as _h
+    last = None
+    for it in items:
+        if group and it.section != last:
+            st.markdown(f"##### {it.section}")
+            last = it.section
+        col, lab = _TONE.get(it.tone, _TONE["note"])
+        st.markdown(f"<div style='border-left:4px solid {col};padding:6px 12px;margin:0 0 6px 0;border-radius:6px;"
+                    f"background:rgba(127,127,127,0.07)'><span style='font-size:0.7rem;font-weight:700;color:{col};"
+                    f"text-transform:uppercase;letter-spacing:.04em'>{lab}</span><br>{_h.escape(it.text)}</div>",
+                    unsafe_allow_html=True)
+
+
 # ---------------------------------------------------------------- library persistence
 def _lib_list(shell) -> list[dict]:
     wm = _wm(shell)
@@ -185,23 +214,40 @@ class SetPieceLabPage(Page):
             except Exception as exc:
                 C.render_alert(f"Could not read this file: {exc}", "danger")
         if sd is not None:
+            from fap.setpiecelab import deep as D
+            if D.has_matches(sd):
+                ms = D.matches(sd)
+                pick = st.selectbox("Match", ["All matches"] + ms, key="spl_match",
+                                    format_func=lambda m: m if m == "All matches" else
+                                    f"{m}  ({int((sd.df['match'] == m).sum())} set pieces)",
+                                    help="Every tab (and the report) shows the chosen match — or all matches together")
+                if pick != "All matches":
+                    sig0 = sd._spl_sig
+                    sd = sd.subset(match=pick)
+                    sd._spl_sig = f"{sig0}|m={pick}"
+                sd._spl_match = pick
+            else:
+                sd._spl_match = ""
             C.render_alert(f"Analysed team: {sd.team} — every chart and map is from {sd.team}'s point of view. "
                            f"Attacking = {sd.team} taking the set piece · Defending = the opponent's set pieces "
                            f"against {sd.team} · “won” = {sd.team} won it, “Opponent won” = whichever team {sd.team} "
                            "played. Change the name in “Team in the file” if it is read wrongly.", "info")
-        tabs = st.tabs(["Overview", "By type", "Explorer", "Designer", "Library", "Data"])
-        with tabs[1]:
-            self._by_type(sd) if sd else self._empty()
-        tabs = [tabs[0], *tabs[2:]]
+        tabs = st.tabs(["Overview", "By type", "Insights", "Explorer", "Report", "Designer", "Library", "Data"])
         with tabs[0]:
             self._overview(sd) if sd else self._empty()
         with tabs[1]:
-            self._explorer(sd) if sd else self._empty()
+            self._by_type(sd) if sd else self._empty()
         with tabs[2]:
-            self._designer(shell, sd, can_edit)
+            self._insights(sd) if sd else self._empty()
         with tabs[3]:
-            self._library(shell, can_edit)
+            self._explorer(sd) if sd else self._empty()
         with tabs[4]:
+            self._report(sd) if sd else self._empty()
+        with tabs[5]:
+            self._designer(shell, sd, can_edit)
+        with tabs[6]:
+            self._library(shell, can_edit)
+        with tabs[7]:
             self._data(sd) if sd else self._empty()
 
     @staticmethod
@@ -273,6 +319,14 @@ class SetPieceLabPage(Page):
         ])
         if sd.notes:
             st.caption(" · ".join(sd.notes))
+        from fap.setpiecelab import deep as D
+        from fap.setpiecelab import deep_static as X
+        if D.has_matches(sd) and getattr(sd, "_spl_match", "") == "All matches":
+            st.markdown("#### Match by match")
+            _static_fig(f"{sd._spl_sig}|{tn}|matches", lambda: X.match_chart(sd, f"{sd.team} — set pieces match by match", theme=th),
+                        f"{sd.team}_match_by_match", "ov_matches")
+            bm = D.by_match(sd)
+            st.dataframe(bm.round(1), use_container_width=True, hide_index=True)
         tabs = st.tabs([f"Attacking ({g(att, 'Count')})", f"Defending ({g(de, 'Count')})"])
         for phase, tab in zip(("Attacking", "Defending"), tabs):
             with tab:
@@ -293,6 +347,29 @@ class SetPieceLabPage(Page):
                     _show(CH.contest_rates(sub, theme=th), f"ov_contest_{phase}")
                     _png_button("Download PNG", lambda sub=sub, psig=psig: _static_png(psig, "contests", (), tn, sub),
                                 f"{sd.team}_{phase}_first_contact_second_ball", f"ct_{phase}")
+                gg = sub.df
+                att_ = phase == "Attacking"
+                nm = f"{sd.team} {'taking' if att_ else 'defending'} set pieces"
+                c1, c2 = st.columns(2)
+                with c1:
+                    _static_fig(f"{psig}|{tn}|funnel", lambda sub=sub, gg=gg, nm=nm, att_=att_: X.funnel_chart(
+                        sub, gg, f"{nm} — from delivery to goal", att_, theme=th), f"{nm}_funnel", f"ov_funnel_{phase}")
+                with c2:
+                    if gg["is_shot"].any():
+                        _static_fig(f"{psig}|{tn}|shots", lambda sub=sub, gg=gg, nm=nm: X.shots_chart(
+                            sub, gg, f"{nm} — shots", theme=th), f"{nm}_shots", f"ov_shots_{phase}")
+                dl = gg[gg["category"].isin(["Corner", "Free kick", "Throw-in"]) & (gg["variant"] != "Direct")]
+                if dl["x"].notna().any():
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        _static_fig(f"{psig}|{tn}|zones", lambda sub=sub, dl=dl, nm=nm: X.zone_map(
+                            sub, dl, f"{nm} — delivery zones", theme=th), f"{nm}_zones", f"ov_zones_{phase}")
+                    with c2:
+                        _static_fig(f"{psig}|{tn}|deliv", lambda sub=sub, dl=dl, nm=nm: X.delivery_map(
+                            sub, dl, f"{nm} — every delivery", theme=th), f"{nm}_deliveries", f"ov_deliv_{phase}")
+                if (gg["fc_won_by"] != "").any() or (gg["fc_lost_by"] != "").any():
+                    _static_fig(f"{psig}|{tn}|players", lambda sub=sub, gg=gg, nm=nm: X.players_chart(
+                        sub, gg, f"{nm} — {sd.team}'s players at the 1st contact", theme=th), f"{nm}_players", f"ov_pl_{phase}")
                 if phase == "Attacking" and (sub.df["taker"] != "").any():
                     title = f"{sd.team} — takers (all attacking set pieces)"
                     _show(CH.takers_chart(sub, sub.df, title, theme=th), "ov_takers")
@@ -390,9 +467,37 @@ class SetPieceLabPage(Page):
             C.metric_card_html("Danger " + ("created" if att else "conceded"), str(sm.get("Dangerous (goal/shot/threat)", 0)),
                                hint=f"{sm.get('Shots', 0)} shot(s) · {sm.get('Goals', 0)} goal(s)"),
         ])
+        from fap.setpiecelab import deep as D
+        from fap.setpiecelab import deep_static as X
         st.markdown("##### Key findings")
-        for line in A.row_insights(sd, row):
-            st.markdown(f"- {line}")
+        _render_insights(D.type_insights(sd, row, g, section=label))
+        direct = g["category"].iloc[0] == "Penalty" or g["variant"].iloc[0] == "Direct"
+        if not direct and g["x"].notna().any():
+            c1, c2 = st.columns(2)
+            with c1:
+                _static_fig(f"{ssig}|{tn}|deliv|{row}", lambda: X.delivery_map(sd, g, f"{sd.team} · {label} — deliveries", theme=th),
+                            f"{sd.team}_{label}_deliveries", f"bt_deliv_{k}")
+            with c2:
+                _static_fig(f"{ssig}|{tn}|zones|{row}", lambda: X.zone_map(sd, g, f"{sd.team} · {label} — delivery zones", theme=th),
+                            f"{sd.team}_{label}_zones", f"bt_zones_{k}")
+            zt = D.zone_table(sd, g)
+            if len(zt):
+                st.dataframe(zt.round(0), use_container_width=True, hide_index=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            _static_fig(f"{ssig}|{tn}|funnel|{row}", lambda: X.funnel_chart(sd, g, f"{sd.team} · {label} — from delivery to goal",
+                                                                         att, theme=th), f"{sd.team}_{label}_funnel", f"bt_funnel_{k}")
+        with c2:
+            if g["is_shot"].any():
+                _static_fig(f"{ssig}|{tn}|shots|{row}", lambda: X.shots_chart(sd, g, f"{sd.team} · {label} — shots", theme=th),
+                            f"{sd.team}_{label}_shots", f"bt_shots_{k}")
+        if (g["fc_won_by"] != "").any() or (g["fc_lost_by"] != "").any():
+            _static_fig(f"{ssig}|{tn}|players|{row}", lambda: X.players_chart(sd, g, f"{sd.team} · {label} — 1st-contact players",
+                                                                           theme=th), f"{sd.team}_{label}_players", f"bt_pl_{k}")
+        ea = D.exec_area(sd, g)
+        if len(ea):
+            with st.expander("Execution × target — counts, 1st contact, shots, danger", expanded=False):
+                st.dataframe(ea.round(0), use_container_width=True, hide_index=True)
         if side == "All" and len(sides) == 2:
             st.markdown(f"##### {_type_label(row)} — left vs right")
             for line in A.side_insights(sd_all, row):
@@ -444,6 +549,66 @@ class SetPieceLabPage(Page):
         with st.expander(f"Every {label.lower()}", expanded=False):
             cols = ["instance", "side", "taker"] + [q for q in sd.qualifiers if (g[q] != "").any()] + ["x", "y", "sb_x", "sb_y"]
             st.dataframe(g[[c for c in cols if c in g.columns]], use_container_width=True, hide_index=True)
+
+    def _insights(self, sd) -> None:
+        from fap.setpiecelab import deep as D
+        st.caption("Every finding is counted from the file — rates are judged (strength / point to watch) only from "
+                   f"{D.MIN_N}+ set pieces; smaller groups are marked “small sample”.")
+        items = D.headline_insights(sd)
+        _render_insights(items, group=True)
+        phases = [p for p in ("Attacking", "Defending") if (sd.df["phase"] == p).any()]
+        for ph, t in zip(phases, st.tabs(phases)):
+            with t:
+                for ph_, row, g in D.groups(sd):
+                    if ph_ == ph:
+                        st.markdown(f"##### {D.type_label(row)} ({len(g)})")
+                        _render_insights(D.type_insights(sd, row, g, section=D.type_label(row)))
+        if D.has_matches(sd) and getattr(sd, "_spl_match", "") == "All matches":
+            st.markdown("#### Match by match")
+            for m in D.matches(sd):
+                with st.expander(m, expanded=False):
+                    _render_insights(D.match_insights(sd, m))
+
+    def _report(self, sd) -> None:
+        from fap.setpiecelab import deep as D
+        from fap.setpiecelab.report import SECTIONS, ReportOptions, build_report
+        scope = getattr(sd, "_spl_match", "") or ""
+        st.caption("A PDF (A4 landscape) with every chart and map — aggregated and per set-piece type — "
+                   + ("for " + (f"the match vs {scope}" if scope and scope != "All matches" else "all matches") + ". "
+                      if scope else "") + "Choose what goes in.")
+        c = st.columns([2, 2, 1])
+        title = c[0].text_input("Title", value=f"{sd.team} — set pieces", key="spl_rep_title")
+        sub_default = (f"vs {scope}" if scope and scope != "All matches" else
+                       f"{len(D.matches(sd))} matches" if D.has_matches(sd) else f"{len(sd.df)} set pieces")
+        subtitle = c[1].text_input("Subtitle", value=sub_default, key="spl_rep_sub")
+        theme = c[2].radio("Theme", ["Dark", "Light"], key="spl_rep_theme")
+        c = st.columns(3)
+        inc_ins = c[0].checkbox("Include insights", value=True, key="spl_rep_ins")
+        detail = c[1].radio("Content", ["Aggregated + detailed", "Aggregated only"], key="spl_rep_detail")
+        phases = c[2].multiselect("Phases", ["Attacking", "Defending"], default=["Attacking", "Defending"], key="spl_rep_ph")
+        types = st.multiselect("Set-piece types in the detailed part (empty = all)", sd.rows, key="spl_rep_types",
+                               format_func=D.type_label)
+        secs = st.multiselect("Charts", list(SECTIONS), default=list(SECTIONS), key="spl_rep_secs")
+        per_match = match_ins = False
+        if D.has_matches(sd) and scope == "All matches":
+            c = st.columns(2)
+            per_match = c[0].checkbox("Match-by-match pages", value=True, key="spl_rep_pm")
+            match_ins = c[1].checkbox("Insights per match", value=False, key="spl_rep_mi", disabled=not inc_ins)
+        opts = ReportOptions(title=title, subtitle=subtitle, theme=theme, include_insights=inc_ins,
+                             detailed=detail.startswith("Aggregated +"), phases=tuple(phases), per_match=per_match,
+                             match_insights=match_ins and inc_ins, sections=tuple(secs), types=tuple(types))
+        stamp = json.dumps([sd._spl_sig, title, subtitle, theme, inc_ins, detail, phases, types, secs, per_match, match_ins])
+        if st.button("Build PDF report", type="primary", key="spl_rep_build", icon=":material/picture_as_pdf:"):
+            with st.spinner("Building the report — every chart is rendered, this takes up to a minute…"):
+                data = build_report(sd, opts)
+            st.session_state["_spl_report"] = (stamp, data, list(opts.log))
+        got = st.session_state.get("_spl_report")
+        if got and got[0] == stamp:
+            st.download_button("Download PDF report", got[1], file_name=f"{_fname(title)}.pdf", mime="application/pdf",
+                               key="spl_rep_dl", type="primary", icon=":material/download:")
+            st.caption(f"{len(got[1]) / 1e6:.1f} MB")
+            if got[2]:
+                st.warning("Some charts were skipped: " + "; ".join(got[2]))
 
     def _explorer(self, sd) -> None:
         from fap.setpiecelab import analytics as A
