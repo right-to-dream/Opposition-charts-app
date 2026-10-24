@@ -274,13 +274,17 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
 
     # overall result: from every "... Outcome" column (1st contact Outcome, 2nd contact Outcome, Outcome)
     out_cols = [q for q in quals if "outcome" in q.lower() or q.lower() == "result"]
+    # contact-by-contact files (1st contact Outcome, 2nd contact Outcome, Shot Outcome): no overall result shown —
+    # every contact is analysed on its own (Result is kept internally only, for shots / goals)
+    per_contact = sum(1 for q in out_cols if any(k in q.lower() for k in ("1st", "first", "2nd", "second"))) >= 1
     if out_cols:
         df[RESULT_COL] = [_result_of([r[q] for q in out_cols]) for _, r in df[out_cols].iterrows()]
         if out_cols == ["Outcome"]:                    # a single Outcome column → it IS the result
             df["Outcome"] = df[RESULT_COL]             # kept as an alias (older reports / designs use it)
             quals = [q for q in quals if q != "Outcome"]
         quals = [RESULT_COL] + quals
-        notes.append(f"Result = the most dangerous outcome coded in: {', '.join(out_cols)}.")
+        if not per_contact:
+            notes.append(f"Result = the most dangerous outcome coded in: {', '.join(out_cols)}.")
     eff = next((q for q in quals if q.lower() == "efficiency"), None)
     if eff:                                            # "Goal" coded in Efficiency (direct free kicks)
         if RESULT_COL not in df:
@@ -401,6 +405,8 @@ def load_setpieces(src: Any, name: str = "", team: str = "") -> SetPieceData:
     if not team:
         tl = raw[cols["timeline"]].dropna().astype(str) if "timeline" in cols else pd.Series(dtype=str)
         team = re.sub(r"(?i)\s*set\s*pieces?.*$", "", tl.iloc[0]).strip() if len(tl) else "Team"
+    if per_contact:
+        quals = [q for q in quals if q != RESULT_COL]
     return SetPieceData(df=df, team=team or "Team", qualifiers=quals, binary=binary, source_name=name, notes=notes)
 
 

@@ -24,8 +24,10 @@ def _rate(series: pd.Series) -> tuple[int, int]:
 
 
 def _col(sd: SetPieceData, name: str) -> str | None:
-    if name.lower() == "outcome" and RESULT_COL in sd.df:      # the combined result replaces "Outcome"
-        return RESULT_COL
+    if name.lower() == "outcome":
+        if RESULT_COL in sd.qualifiers:                       # single-outcome files: Result = that outcome
+            return RESULT_COL
+        return next((q for q in sd.qualifiers if "outcome" in q.lower() and q.lower().startswith(("1st", "first"))), None)
     for q in sd.qualifiers:
         if q.strip().lower() == name.lower():
             return q
@@ -33,7 +35,8 @@ def _col(sd: SetPieceData, name: str) -> str | None:
 
 
 def result_col(sd: SetPieceData) -> str | None:
-    return RESULT_COL if RESULT_COL in sd.df else None
+    """The overall result — only for files with ONE outcome column (contact-by-contact files have none)."""
+    return RESULT_COL if RESULT_COL in sd.qualifiers else None
 
 
 def contest_label(sd: SetPieceData, v: str) -> str:
@@ -67,6 +70,9 @@ def summarise(sd: SetPieceData, g: pd.DataFrame) -> dict:
         rec["Efficient"] = int((e.str.contains("success") & ~e.str.contains("unsuccess")).sum())
         rec["Efficiency coded"] = int((e != "").sum())
     rc = result_col(sd)
+    if "is_shot" in g and not rc:                             # contact-by-contact files: shots / goals from the flags
+        rec["Goals"] = int(g["is_goal"].sum())
+        rec["Shots"] = int(g["is_shot"].sum())
     if rc:
         o = g[rc].str.lower()
         rec["Goals"] = int((o == "goal").sum())
@@ -357,11 +363,15 @@ def takers(sd: SetPieceData, g: pd.DataFrame | None = None) -> pd.DataFrame:
             rec["Dangerous"] = int(o.isin(DANGER).sum())
             rec["Goals"] = int((o == "goal").sum())
             rec["Danger %"] = _pct(rec["Dangerous"], len(d))
+        elif "is_shot" in d:
+            rec["Shots"] = int(d["is_shot"].sum())
+            rec["Goals"] = int(d["is_goal"].sum())
         for s in ("Left", "Right"):
             rec[s] = int((d["side"] == s).sum()) if "side" in d else 0
         rows.append(rec)
     out = pd.DataFrame(rows)
-    return out.sort_values(["Taken", "Dangerous"] if "Dangerous" in out else ["Taken"], ascending=False) if len(out) else out
+    key = "Dangerous" if "Dangerous" in out else "Shots" if "Shots" in out else None
+    return out.sort_values(["Taken", key] if key else ["Taken"], ascending=False) if len(out) else out
 
 
 def group_compare(sd: SetPieceData, groups: list[tuple[str, pd.DataFrame]]) -> pd.DataFrame:
@@ -397,6 +407,8 @@ def side_insights(sd: SetPieceData, row: str) -> list[str]:
         if rc:
             k = int(d[rc].str.lower().isin(DANGER).sum())
             bits.append(f"danger {k}/{len(d)}")
+        elif "is_shot" in d:
+            bits.append(f"shots {int(d['is_shot'].sum())}, goals {int(d['is_goal'].sum())}")
         area = _main(d, _col(sd, "Area"))
         if area[2]:
             bits.append(f"mostly to the {area[0].lower()} ({area[1]}/{area[2]})")

@@ -149,7 +149,7 @@ def test_split_outcome_columns_side_coords_and_second_ball():
     })
     sd = load_setpieces(raw, "p.csv")
     df = sd.df
-    assert sd.team == "Pharco" and sd.qualifiers[0] == RESULT_COL and "X-GK" not in sd.qualifiers
+    assert sd.team == "Pharco" and RESULT_COL not in sd.qualifiers and "X-GK" not in sd.qualifiers   # per-contact: no overall result
     assert list(df[RESULT_COL]) == ["GK Punch", "Shot", "Clearance", "", "Goal"]     # most dangerous wins
     assert (df.at[0, "x"], df.at[0, "landing_side"], df.at[0, "sb_x"]) == (103.0, "Right", 96.0)
     assert (df.at[1, "x"], df.at[1, "landing_side"]) == (99.0, "Left")
@@ -157,7 +157,7 @@ def test_split_outcome_columns_side_coords_and_second_ball():
     assert df.at[1, "2nd ball"] == "Yes"
     assert A.categories(sd) == ["Corner", "Goal kick", "Penalty"]
     t = A.category_table(sd, "Corner").set_index("Phase")
-    assert t.loc["Attacking", "Dangerous (goal/shot/threat)"] == 1 and t.loc["Defending", "1st contact won"] == 1
+    assert t.loc["Attacking", "Shots"] == 1 and t.loc["Defending", "1st contact won"] == 1
     assert any("Second balls" in s for s in A.category_insights(sd, "Corner"))
     from fap.setpiecelab import static as S
     assert S.png(S.category_compare(sd, "Corner"), 30)[1:4] == b"PNG"
@@ -271,3 +271,20 @@ def test_deep_tables_insights_and_report():
     o = ReportOptions(dpi=40, match_insights=True)
     pdf = build_report(sd, o)
     assert pdf[:4] == b"%PDF" and not o.log
+
+
+def test_no_overall_result_phase_colours_and_footer():
+    from fap.matchlab.charts import DARK
+    from fap.setpiecelab import deep as D
+    from fap.setpiecelab import static as S
+    from fap.setpiecelab.loader import RESULT_COL, load_setpieces
+    from fap.setpiecelab.report import ReportOptions, build_report
+    sd = load_setpieces(_plain_matrix(), "plain.xlsx", team="Masar")
+    assert RESULT_COL not in sd.qualifiers and "Result" not in " ".join(i.text for i in D.all_insights(sd))
+    assert all(i.phase in ("Attacking", "Defending") for i in D.all_insights(sd))
+    assert S.shot_color("Goal", True, DARK) == S.GOOD and S.shot_color("Saved", True, DARK) == S.BAD
+    assert S.shot_color("Goal", False, DARK) == S.BAD and S.shot_color("Saved", False, DARK) == S.GOOD
+    pen = [i.text for i in D.type_insights(sd, "Penalty")]
+    assert not any("contact" in t for t in pen)                    # direct: no contacts
+    o = ReportOptions(dpi=40, footer="Club · Analysis")
+    assert build_report(sd, o)[:4] == b"%PDF" and S.FOOTER == "SET PIECE LAB  ·  pitch 105 × 68 m" and not o.log

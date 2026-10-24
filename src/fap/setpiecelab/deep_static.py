@@ -42,6 +42,10 @@ def _res_color(v: str, th: Theme) -> str:
     return RESULT_COLORS.get(str(v).lower(), th.muted)
 
 
+def _first_outcome(sd: SetPieceData) -> str | None:
+    return A.contact_columns(sd, 1)[0]
+
+
 # ------------------------------------------------------------------ delivery map
 def delivery_map(sd: SetPieceData, g: pd.DataFrame, title: str, subtitle: str = "", *, theme: Theme = DARK,
                  show_origin: bool = True, show_second: bool = True):
@@ -55,8 +59,8 @@ def delivery_map(sd: SetPieceData, g: pd.DataFrame, title: str, subtitle: str = 
     ratio = (PITCH_L + 3 - y_lo) / (PITCH_W + 8)
     with _rc(th):
         fig = _figure(th, (10, 2.4 + 9.4 * ratio), title, subtitle or (
-            f"{len(pts)} of {len(g)} with a landing point   ·   colour = result   ·   "
-            f"● {sd.team} won the 1st contact   ✕ opponent won it   ◆ second ball"))
+            f"{len(pts)} of {len(g)} with a landing point   ·   colour = 1st contact outcome   ·   "
+            f"● {sd.team} won the 1st contact   ✕ opponent won it" + ("   ◆ second ball" if len(sb) else "")))
         H = 2.4 + 9.4 * ratio
         ax = fig.add_axes([0.03, 1.3 / H, 0.94, 1 - 2.25 / H])
         pitch = _half_pitch(th)
@@ -65,8 +69,9 @@ def delivery_map(sd: SetPieceData, g: pd.DataFrame, title: str, subtitle: str = 
         if pts.empty:
             ax.text(PITCH_W / 2, PITCH_L - 12, "No landing points coded", ha="center", va="center", color=th.muted, fontsize=13)
             return fig
+        o1 = _first_outcome(sd)
         for _, r in pts.iterrows():
-            col = _res_color(r.get(RESULT_COL, ""), th)
+            col = _res_color(r.get(o1, "") if o1 else "", th)
             if show_origin and pd.notna(r.get("ox")) and pd.notna(r.get("oy")):
                 pitch.lines(r["ox"], r["oy"], r["x"], r["y"], ax=ax, color=col, lw=1.2, alpha=0.32, comet=True,
                             transparent=True, zorder=2)
@@ -80,7 +85,7 @@ def delivery_map(sd: SetPieceData, g: pd.DataFrame, title: str, subtitle: str = 
             if pd.notna(r["x"]):
                 pitch.lines(r["x"], r["y"], r["sb_x"], r["sb_y"], ax=ax, color=th.carry, lw=1, ls=(0, (2, 2)), zorder=3)
             pitch.scatter(r["sb_x"], r["sb_y"], ax=ax, s=110, marker="D", color=th.carry, edgecolors=th.bg, lw=1, zorder=4)
-        res = pts[RESULT_COL].replace("", "Not coded").value_counts() if RESULT_COL in pts else pd.Series(dtype=int)
+        res = pts[o1].replace("", "Not coded").value_counts() if o1 else pd.Series(dtype=int)
         handles = [Line2D([0], [0], marker="o", lw=0, markersize=9, color=_res_color(k, th), label=f"{k} ({v})")
                    for k, v in res.items()]
         handles += [Line2D([0], [0], marker="o", lw=0, markersize=9, color=th.text, label=f"{sd.team} won 1st contact"),
@@ -101,7 +106,7 @@ def zone_map(sd: SetPieceData, g: pd.DataFrame, title: str, subtitle: str = "", 
     with _rc(th):
         fig = _figure(th, (10, 6.6), title, subtitle or (
             f"{int(zt['Deliveries'].sum()) if len(zt) else 0} deliveries located   ·   near side = the taker's side (right)   ·   "
-            f"label = deliveries · 1st contact won by {sd.team} · danger {'created' if att else 'conceded'}"))
+            f"label = deliveries · 1st contact won by {sd.team} · shots {'' if att else 'against'}".rstrip()))
         ax = fig.add_axes([0.03, 0.12, 0.94, 0.72])
         pitch = _half_pitch(th)
         pitch.draw(ax=ax)
@@ -122,12 +127,12 @@ def zone_map(sd: SetPieceData, g: pd.DataFrame, title: str, subtitle: str = "", 
             ax.add_patch(Rectangle((px, py), y1 - y0, x1 - x0, fill=False, edgecolor=th.line, lw=0.6, zorder=1.6))
             cx, cy = px + (y1 - y0) / 2, py + (x1 - x0) / 2
             c1 = f"{int(r['1st contact won'])}/{int(r['1st contact decided'])}" if r["1st contact decided"] else "–"
-            txt = f"{int(r['Deliveries'])}\n1st {c1}\n⚠ {int(r['Dangerous'])}"
+            txt = f"{int(r['Deliveries'])}\n1st {c1}\n{int(r['Shots'])} shot{'s' if r['Shots'] != 1 else ''}"
             ax.text(cx, cy, txt, ha="center", va="center", fontsize=8.5 if (x1 - x0) < 8 else 10, color=th.text,
                     fontweight="bold", zorder=3, linespacing=1.15)
         other = zt[zt["Zone"].isin(["Wide / deep", "Short (not delivered)"])]
         if len(other):
-            fig.text(0.5, 0.075, "   ·   ".join(f"{r['Zone']}: {int(r['Deliveries'])} (danger {int(r['Dangerous'])})"
+            fig.text(0.5, 0.075, "   ·   ".join(f"{r['Zone']}: {int(r['Deliveries'])} ({int(r['Shots'])} shots)"
                                                 for _, r in other.iterrows()), ha="center", fontsize=9.5, color=th.muted)
         ax.text(2, PITCH_L + 1.6, "near side (taker) →", ha="right", va="center", fontsize=8.5, color=th.muted)
         ax.text(PITCH_W - 2, PITCH_L + 1.6, "← far side", ha="left", va="center", fontsize=8.5, color=th.muted)
@@ -193,11 +198,13 @@ def funnel_chart(sd: SetPieceData, g: pd.DataFrame, title: str, attacking: bool,
 
 def shots_chart(sd: SetPieceData, g: pd.DataFrame, title: str, *, theme: Theme = DARK):
     th = theme
+    from fap.setpiecelab.static import shot_color
     st = D.shots_table(sd, g)
-    so = g["shot_outcome"][g["shot_outcome"] != ""].value_counts()
+    so = D.shot_outcomes(g)
+    att = (g["phase"].iloc[0] == "Attacking") if len(g) else True
     with _rc(th):
         fig = _figure(th, (11, 4.4), title, f"{int(g['is_shot'].sum())} shots   ·   left = where the shot came from   ·   "
-                                            "right = how it ended")
+                                            "right = Shot Outcome (" + ("goal green · saved red)" if att else "goal against red · saved green)"))
         a1 = fig.add_axes([0.16, 0.12, 0.32, 0.64])
         a2 = fig.add_axes([0.64, 0.12, 0.32, 0.64])
         for ax, data, colors in ((a1, st.set_index("Source")["Shots"] if len(st) else pd.Series(dtype=int), None),
@@ -207,8 +214,7 @@ def shots_chart(sd: SetPieceData, g: pd.DataFrame, title: str, *, theme: Theme =
                 ax.text(0.5, 0.5, "none coded", ha="center", color=th.muted, transform=ax.transAxes)
                 continue
             data = data.iloc[::-1]
-            cols = [RESULT_COLORS.get("goal") if str(k).lower() == "goal" else th.team for k in data.index] if colors \
-                else [th.accent] * len(data)
+            cols = [shot_color(k, att, th) for k in data.index] if colors else [th.accent] * len(data)
             ax.barh(range(len(data)), data.values, color=cols, height=0.6)
             for yi, v in enumerate(data.values):
                 ax.text(v + data.max() * 0.04, yi, str(int(v)), va="center", fontsize=10, color=th.text)
@@ -233,7 +239,7 @@ def match_chart(sd: SetPieceData, title: str, *, theme: Theme = DARK):
             fig.text(0.5, 0.5, "No match / opponent column in the file", ha="center", color=th.muted, fontsize=12)
             return fig
         for k, (ph, col, x0) in enumerate((("Attacking", th.team, 0.14), ("Defending", th.opp, 0.58))):
-            ax = fig.add_axes([x0, 0.1, 0.36, 1 - 1.5 / h])
+            ax = fig.add_axes([x0, 0.1, 0.36, 1 - 2.0 / h])
             d = bm[bm["Phase"] == ph].set_index("Match").reindex(ms)
             y = np.arange(len(ms))
             ax.barh(y + 0.18, d["Shots"].fillna(0), height=0.34, color=col, label="Shots")
@@ -263,16 +269,17 @@ def summary_table(sd: SetPieceData, title: str, *, theme: Theme = DARK):
         rows.append([ph, D.type_label(r), str(s["Count"]),
                      f"{s['1st contact won']}/{s['1st contact decided']}" if s["1st contact decided"] else "–",
                      f"{s['2nd ball won']}/{s['2nd ball decided']}" if s["2nd ball decided"] else "–",
-                     str(s["Shots"]), str(s["Goals"]), f"{s['Danger %']:.0f}%" if s["Count"] else "–"])
-    cols = ["Phase", "Set piece", "Count", f"1st contact won", "2nd ball won", "Shots", "Goals", "Danger %"]
+                     str(s["Shots"]), str(s["On target"]), str(s["Goals"])])
+    cols = ["Phase", "Set piece", "Count", "1st contact won", "2nd ball won", "Shots", "On target", "Goals"]
     with _rc(th):
         h = 1.6 + 0.42 * (len(rows) + 1)
-        fig = _figure(th, (13, h), title, f"Taking = {sd.team} takes it (shots / goals scored)   ·   Defending = against "
-                                          f"{sd.team} (shots / goals conceded)   ·   contests = won by {sd.team}")
+        fig = _figure(th, (13, h), title, f"Attacking = {sd.team} takes it (shots / goals scored)   ·   Defending = against "
+                                          f"{sd.team} (shots / goals conceded)   ·   contests = won by {sd.team}   ·   "
+                                          "direct free kicks & penalties have no contests")
         ax = fig.add_axes([0.03, 0.06, 0.94, 1 - 1.3 / h])
         ax.axis("off")
         n = len(rows) + 1
-        widths = [0.11, 0.27, 0.08, 0.14, 0.14, 0.08, 0.08, 0.1]
+        widths = [0.11, 0.27, 0.08, 0.14, 0.14, 0.08, 0.1, 0.08]
         xs = np.cumsum([0] + widths[:-1])
         for j, c in enumerate(cols):
             ax.text(xs[j] + 0.005, 1 - 0.5 / n, c, ha="left", va="center", fontsize=10, fontweight="bold", color=th.accent)
@@ -292,7 +299,7 @@ def summary_table(sd: SetPieceData, title: str, *, theme: Theme = DARK):
 def insights_page(items: list, title: str, subtitle: str = "", *, theme: Theme = DARK, width: int = 120):
     """A page of insights (``deep.Insight``) grouped by section — coloured by strength / concern / note."""
     th = theme
-    tone_col = {"strength": th.good, "concern": th.bad, "note": th.team}
+    phase_col = {"Attacking": th.team, "Defending": th.opp}
     lines = []
     last = None
     for it in items:
@@ -300,10 +307,10 @@ def insights_page(items: list, title: str, subtitle: str = "", *, theme: Theme =
             lines.append(("h", it.section, None))
             last = it.section
         for k, w in enumerate(textwrap.wrap(it.text, width)):
-            lines.append(("t", ("•  " if k == 0 else "   ") + w, tone_col.get(it.tone, th.team)))
+            lines.append(("t", ("•  " if k == 0 else "   ") + w, phase_col.get(getattr(it, "phase", ""), th.accent)))
     H = 1.4 + 0.27 * len(lines) + 0.12 * sum(1 for l_ in lines if l_[0] == "h")
     with _rc(th):
-        fig = _figure(th, (13, H), title, subtitle or "green = strength   ·   red = point to watch   ·   blue = note   ·   "
+        fig = _figure(th, (13, H), title, subtitle or "blue = attacking (taking)   ·   red = defending   ·   "
                                                      "every number counted from the file")
         y = 1 - 1.15 / H
         for kind, text, col in lines:
@@ -311,7 +318,43 @@ def insights_page(items: list, title: str, subtitle: str = "", *, theme: Theme =
                 y -= 0.12 / H
                 fig.text(0.03, y, text.upper(), ha="left", va="top", fontsize=10, fontweight="bold", color=th.accent)
             else:
-                fig.text(0.045, y, text, ha="left", va="top", fontsize=10, color=th.text)
+                fig.text(0.045, y, text, ha="left", va="top", fontsize=10, color=col)
                 fig.text(0.033, y, "▍", ha="left", va="top", fontsize=10, color=col)
             y -= 0.27 / H
+    return fig
+
+
+def match_table(sd: SetPieceData, title: str, *, theme: Theme = DARK):
+    """Every match on one page: per match and phase — count, contests, shots, on target, goals."""
+    th = theme
+    bm = D.by_match(sd)
+    rows = [[r["Match"], r["Phase"], str(int(r["Count"])),
+             f"{int(r['1st contact won'])}/{int(r['1st contact decided'])}" if r["1st contact decided"] else "–",
+             f"{int(r['2nd ball won'])}/{int(r['2nd ball decided'])}" if r["2nd ball decided"] else "–",
+             str(int(r["Shots"])), str(int(r["On target"])), str(int(r["Goals"]))] for _, r in bm.iterrows()]
+    cols = ["Match", "Phase", "Count", "1st contact won", "2nd ball won", "Shots", "On target", "Goals"]
+    with _rc(th):
+        h = 1.6 + 0.36 * (len(rows) + 1)
+        fig = _figure(th, (13, h), title, f"per match   ·   Attacking = {sd.team} takes it   ·   Defending = against {sd.team}")
+        ax = fig.add_axes([0.03, 0.05, 0.94, 1 - 1.3 / h])
+        ax.axis("off")
+        n = len(rows) + 1
+        widths = [0.24, 0.12, 0.08, 0.14, 0.14, 0.09, 0.1, 0.08]
+        xs = np.cumsum([0] + widths[:-1])
+        for j, c in enumerate(cols):
+            ax.text(xs[j] + 0.005, 1 - 0.5 / n, c, ha="left", va="center", fontsize=10, fontweight="bold", color=th.accent)
+        last = None
+        for i, row in enumerate(rows, start=1):
+            yc = 1 - (i + 0.5) / n
+            if row[0] != last and i > 1:
+                ax.plot([0, 1], [1 - i / n] * 2, color=th.grid, lw=0.8)
+            for j, v in enumerate(row):
+                if j == 0 and row[0] == last:
+                    continue
+                col = (th.team if v == "Attacking" else th.opp) if j == 1 else th.text
+                ax.text(xs[j] + 0.005, yc, v, ha="left", va="center", fontsize=10, color=col,
+                        fontweight="bold" if j in (0, 1) else "normal")
+            last = row[0]
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
     return fig

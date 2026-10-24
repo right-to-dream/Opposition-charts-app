@@ -19,14 +19,32 @@ from fap.setpiecelab import analytics as A  # noqa: E402
 from fap.setpiecelab.loader import PITCH_L, PITCH_W, SetPieceData, is_yes  # noqa: E402
 
 OUT_COLORS = {"goal": "#e5484d", "shot": "#f97316", "threat": "#f5b301"}
+FOOTER = "SET PIECE LAB  ·  pitch 105 × 68 m"      # chart footer — the report sets its own ("" = none)
+GOOD, BAD = "#22c55e", "#ef4444"
+
+
+def shot_color(outcome: str, attacking: bool, th: Theme) -> str:
+    """Shot outcome colour from the analysed team's view: our goal green / saved red — and the reverse against us."""
+    k = str(outcome).strip().lower()
+    if k == "goal":
+        return GOOD if attacking else BAD
+    if k in ("saved", "save"):
+        return BAD if attacking else GOOD
+    if k in ("blocked", "blocked by wall"):
+        return "#f59e0b"
+    if k in ("off target", "wide", "over"):
+        return "#94a3b8"
+    if k in ("post", "woodwork", "hit post"):
+        return "#a855f7"
+    return th.muted
 
 
 def _figure(th: Theme, size, title: str, subtitle: str):
     fig = plt.figure(figsize=size, facecolor=th.bg)
     fig.text(0.03, 0.975, title, ha="left", va="top", fontsize=17, fontweight="bold", color=th.text)
     fig.text(0.03, 0.975 - 0.42 / size[1], subtitle, ha="left", va="top", fontsize=10, color=th.muted)
-    fig.text(0.03, 0.012, "SET PIECE LAB  ·  pitch 105 × 68 m", ha="left", va="bottom", fontsize=7.5, color=th.muted,
-             fontweight="bold", alpha=0.85)
+    if FOOTER:
+        fig.text(0.03, 0.012, FOOTER, ha="left", va="bottom", fontsize=7.5, color=th.muted, fontweight="bold", alpha=0.85)
     return fig
 
 
@@ -497,8 +515,9 @@ def takers_chart(sd: SetPieceData, g, title: str, *, theme: Theme = DARK):
     t = A.takers(sd, g)
     with _rc(th):
         h = 1.8 + 0.5 * max(1, len(t))
+        key = "Dangerous" if "Dangerous" in t else "Shots" if "Shots" in t else None
         fig = _figure(th, (11, h), title, f"{sd.team} takers by shirt number   ·   bar = set pieces taken   ·   "
-                      "red = led to a goal / shot / threat")
+                      + ("red = led to a goal / shot / threat" if key == "Dangerous" else "red = led to a shot"))
         ax = fig.add_axes([0.17, 0.12, 0.57, 1 - 1.5 / h])
         if t.empty:
             ax.axis("off")
@@ -506,15 +525,17 @@ def takers_chart(sd: SetPieceData, g, title: str, *, theme: Theme = DARK):
             return fig
         t = t.iloc[::-1]
         y = np.arange(len(t))
-        dang = t["Dangerous"].to_numpy() if "Dangerous" in t else np.zeros(len(t))
+        dang = t[key].to_numpy() if key else np.zeros(len(t))
         ax.barh(y, dang, color=th.bad, height=0.6)
         ax.barh(y, t["Taken"] - dang, left=dang, color=th.team, height=0.6)
         for yi, (_, r) in zip(y, t.iterrows()):
             bits = [f"{int(r['Taken'])} taken"]
             if r.get("1st contact decided"):
                 bits.append(f"1st contact {int(r['1st contact won'])}/{int(r['1st contact decided'])}")
-            if "Dangerous" in r:
+            if key == "Dangerous":
                 bits.append(f"danger {int(r['Dangerous'])}")
+            elif key == "Shots":
+                bits.append(f"{int(r['Shots'])} shot(s)")
             if r.get("Goals"):
                 bits.append(f"{int(r['Goals'])} goal(s)")
             bits.append(f"L {r['Left']} · R {r['Right']}")
@@ -535,10 +556,12 @@ def goal_placement(sd: SetPieceData, row: str, *, theme: Theme = DARK):
     W_, H_ = 7.32, 2.44
     g = sd.of(row=row)
     pts = g[g["goal_x_m"].notna()] if "goal_x_m" in g else g.iloc[0:0]
-    rc = A.result_col(sd)
+    att = (g["phase"].iloc[0] == "Attacking") if len(g) else True
     with _rc(th):
         fig = _figure(th, (10, 5.2), f"{sd.team} · {row} — placement in the goal",
-                      f"{len(pts)} of {len(g)} located   ·   as seen from the taker   ·   metres from the left post / ground")
+                      f"{len(pts)} of {len(g)} located   ·   colour = shot outcome ("
+                      + ("goal green · saved red" if att else "goal against red · saved green")
+                      + ")   ·   metres across / height")
         ax = fig.add_axes([0.05, 0.12, 0.9, 0.66])
         ax.add_patch(Rectangle((-1.2, -0.4), W_ + 2.4, 0.4, color="#3b8746"))
         for k in (1, 2):
@@ -547,10 +570,11 @@ def goal_placement(sd: SetPieceData, row: str, *, theme: Theme = DARK):
         ax.plot([0, 0, W_, W_], [0, H_, H_, 0], color=th.text, lw=6, solid_capstyle="butt")
         palette = [th.team, th.accent, th.good, th.carry]
         if len(pts):
-            vals = pts[rc].replace("", "Not coded") if rc else pd.Series("Coded", index=pts.index)
+            src = pts["shot_outcome"] if "shot_outcome" in pts else pd.Series("", index=pts.index)
+            vals = src.replace("", "Not coded")
             for i, v in enumerate(vals.value_counts().index):
                 d = pts[vals == v]
-                col = A.OUTCOME_COLORS.get(v.lower(), palette[i % len(palette)])
+                col = shot_color(v, att, th)
                 ax.scatter(d["goal_x_m"], d["goal_y_m"], s=420, color=col, edgecolors=th.bg, lw=1.5, zorder=3,
                            label=f"{v} ({len(d)})")
                 for _, r in d.iterrows():

@@ -312,9 +312,9 @@ class SetPieceLabPage(Page):
         C.render_metric_row([
             C.metric_card_html("Set pieces coded", str(int(ov["Count"].sum())), hint=f"{len(ov)} types"),
             C.metric_card_html(f"{sd.team} taking", str(g(att, "Count")),
-                               hint=f"{g(att, 'Goals')} goals · {g(att, 'Dangerous (goal/shot/threat)')} dangerous"),
+                               hint=f"{g(att, 'Shots')} shots · {g(att, 'Goals')} goals"),
             C.metric_card_html(f"{sd.team} defending", str(g(de, "Count")),
-                               hint=f"{g(de, 'Goals')} conceded · {g(de, 'Dangerous (goal/shot/threat)')} dangerous"),
+                               hint=f"{g(de, 'Shots')} shots against · {g(de, 'Goals')} conceded"),
             C.metric_card_html("With a landing point", str(g(ov, "With landing point")), hint="x / y coded"),
         ])
         if sd.notes:
@@ -347,35 +347,6 @@ class SetPieceLabPage(Page):
                     _show(CH.contest_rates(sub, theme=th), f"ov_contest_{phase}")
                     _png_button("Download PNG", lambda sub=sub, psig=psig: _static_png(psig, "contests", (), tn, sub),
                                 f"{sd.team}_{phase}_first_contact_second_ball", f"ct_{phase}")
-                gg = sub.df
-                att_ = phase == "Attacking"
-                nm = f"{sd.team} {'taking' if att_ else 'defending'} set pieces"
-                c1, c2 = st.columns(2)
-                with c1:
-                    _static_fig(f"{psig}|{tn}|funnel", lambda sub=sub, gg=gg, nm=nm, att_=att_: X.funnel_chart(
-                        sub, gg, f"{nm} — from delivery to goal", att_, theme=th), f"{nm}_funnel", f"ov_funnel_{phase}")
-                with c2:
-                    if gg["is_shot"].any():
-                        _static_fig(f"{psig}|{tn}|shots", lambda sub=sub, gg=gg, nm=nm: X.shots_chart(
-                            sub, gg, f"{nm} — shots", theme=th), f"{nm}_shots", f"ov_shots_{phase}")
-                dl = gg[gg["category"].isin(["Corner", "Free kick", "Throw-in"]) & (gg["variant"] != "Direct")]
-                if dl["x"].notna().any():
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        _static_fig(f"{psig}|{tn}|zones", lambda sub=sub, dl=dl, nm=nm: X.zone_map(
-                            sub, dl, f"{nm} — delivery zones", theme=th), f"{nm}_zones", f"ov_zones_{phase}")
-                    with c2:
-                        _static_fig(f"{psig}|{tn}|deliv", lambda sub=sub, dl=dl, nm=nm: X.delivery_map(
-                            sub, dl, f"{nm} — every delivery", theme=th), f"{nm}_deliveries", f"ov_deliv_{phase}")
-                if (gg["fc_won_by"] != "").any() or (gg["fc_lost_by"] != "").any():
-                    _static_fig(f"{psig}|{tn}|players", lambda sub=sub, gg=gg, nm=nm: X.players_chart(
-                        sub, gg, f"{nm} — {sd.team}'s players at the 1st contact", theme=th), f"{nm}_players", f"ov_pl_{phase}")
-                if phase == "Attacking" and (sub.df["taker"] != "").any():
-                    title = f"{sd.team} — takers (all attacking set pieces)"
-                    _show(CH.takers_chart(sub, sub.df, title, theme=th), "ov_takers")
-                    _png_button("Download PNG", lambda sub=sub, title=title: _cached_png(
-                        f"{psig}|{tn}|takers", lambda: S.takers_chart(sub, sub.df, title, theme=th)),
-                        f"{sd.team}_takers", "ov_takers")
                 st.dataframe(A.overview(sub), use_container_width=True, hide_index=True)
         st.markdown("#### Opposition report cards")
         st.caption("One PNG page per set piece — landing map, key numbers and every qualifier.")
@@ -485,8 +456,9 @@ class SetPieceLabPage(Page):
                 st.dataframe(zt.round(0), use_container_width=True, hide_index=True)
         c1, c2 = st.columns(2)
         with c1:
-            _static_fig(f"{ssig}|{tn}|funnel|{row}", lambda: X.funnel_chart(sd, g, f"{sd.team} · {label} — from delivery to goal",
-                                                                         att, theme=th), f"{sd.team}_{label}_funnel", f"bt_funnel_{k}")
+            if not direct:                              # direct free kicks / penalties have no contacts
+                _static_fig(f"{ssig}|{tn}|funnel|{row}", lambda: X.funnel_chart(sd, g, f"{sd.team} · {label} — from delivery to goal",
+                                                                             att, theme=th), f"{sd.team}_{label}_funnel", f"bt_funnel_{k}")
         with c2:
             if g["is_shot"].any():
                 _static_fig(f"{ssig}|{tn}|shots|{row}", lambda: X.shots_chart(sd, g, f"{sd.team} · {label} — shots", theme=th),
@@ -571,9 +543,9 @@ class SetPieceLabPage(Page):
 
     def _report(self, sd) -> None:
         from fap.setpiecelab import deep as D
-        from fap.setpiecelab.report import SECTIONS, ReportOptions, build_report
+        from fap.setpiecelab.report import DEFAULT_SECTIONS, SECTIONS, ReportOptions, build_report
         scope = getattr(sd, "_spl_match", "") or ""
-        st.caption("A PDF (A4 landscape) with every chart and map — aggregated and per set-piece type — "
+        st.caption("A PDF (A4 landscape): the general numbers first, then every set-piece type on its own pages — "
                    + ("for " + (f"the match vs {scope}" if scope and scope != "All matches" else "all matches") + ". "
                       if scope else "") + "Choose what goes in.")
         c = st.columns([2, 2, 1])
@@ -582,22 +554,23 @@ class SetPieceLabPage(Page):
                        f"{len(D.matches(sd))} matches" if D.has_matches(sd) else f"{len(sd.df)} set pieces")
         subtitle = c[1].text_input("Subtitle", value=sub_default, key="spl_rep_sub")
         theme = c[2].radio("Theme", ["Dark", "Light"], key="spl_rep_theme")
-        c = st.columns(3)
-        inc_ins = c[0].checkbox("Include insights", value=True, key="spl_rep_ins")
-        detail = c[1].radio("Content", ["Aggregated + detailed", "Aggregated only"], key="spl_rep_detail")
-        phases = c[2].multiselect("Phases", ["Attacking", "Defending"], default=["Attacking", "Defending"], key="spl_rep_ph")
-        types = st.multiselect("Set-piece types in the detailed part (empty = all)", sd.rows, key="spl_rep_types",
-                               format_func=D.type_label)
-        secs = st.multiselect("Charts", list(SECTIONS), default=list(SECTIONS), key="spl_rep_secs")
+        footer = st.text_input("Footer (bottom of every page — leave empty for none)", value=f"{sd.team} · Performance Analysis",
+                               key="spl_rep_footer")
+        c = st.columns(2)
+        inc_ins = c[0].checkbox("Include insights (blue = attacking · red = defending)", value=True, key="spl_rep_ins")
+        phases = c[1].multiselect("Phases", ["Attacking", "Defending"], default=["Attacking", "Defending"], key="spl_rep_ph")
+        types = st.multiselect("Set-piece types (empty = all)", sd.rows, key="spl_rep_types", format_func=D.type_label)
+        secs = st.multiselect("Charts per set-piece type", list(SECTIONS), default=list(DEFAULT_SECTIONS), key="spl_rep_secs",
+                              help="'sides' adds a left and a right delivery map per type (longer report)")
         per_match = match_ins = False
         if D.has_matches(sd) and scope == "All matches":
             c = st.columns(2)
-            per_match = c[0].checkbox("Match-by-match pages", value=True, key="spl_rep_pm")
+            per_match = c[0].checkbox("Match-by-match page", value=True, key="spl_rep_pm")
             match_ins = c[1].checkbox("Insights per match", value=False, key="spl_rep_mi", disabled=not inc_ins)
-        opts = ReportOptions(title=title, subtitle=subtitle, theme=theme, include_insights=inc_ins,
-                             detailed=detail.startswith("Aggregated +"), phases=tuple(phases), per_match=per_match,
-                             match_insights=match_ins and inc_ins, sections=tuple(secs), types=tuple(types))
-        stamp = json.dumps([sd._spl_sig, title, subtitle, theme, inc_ins, detail, phases, types, secs, per_match, match_ins])
+        opts = ReportOptions(title=title, subtitle=subtitle, footer=footer, theme=theme, include_insights=inc_ins,
+                             phases=tuple(phases), per_match=per_match, match_insights=match_ins and inc_ins,
+                             sections=tuple(secs), types=tuple(types))
+        stamp = json.dumps([sd._spl_sig, title, subtitle, footer, theme, inc_ins, phases, types, secs, per_match, match_ins])
         if st.button("Build PDF report", type="primary", key="spl_rep_build", icon=":material/picture_as_pdf:"):
             with st.spinner("Building the report — every chart is rendered, this takes up to a minute…"):
                 data = build_report(sd, opts)

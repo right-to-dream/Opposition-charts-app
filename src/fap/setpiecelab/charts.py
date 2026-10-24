@@ -41,7 +41,8 @@ def overview_bars(sd: SetPieceData, *, theme: Theme = DARK) -> go.Figure:
             if f"{c} decided" in r and r[f"{c} decided"]:
                 bits.append(f"{c} won by {sd.team} {int(r[f'{c} won'])}/{int(r[f'{c} decided'])}")
         if "Goals" in r:
-            bits.append(f"goals {int(r['Goals'])} · shots {int(r['Shots'])} · dangerous {int(r['Dangerous (goal/shot/threat)'])}")
+            bits.append(f"goals {int(r['Goals'])} · shots {int(r['Shots'])}"
+                        + (f" · dangerous {int(r['Dangerous (goal/shot/threat)'])}" if "Dangerous (goal/shot/threat)" in r else ""))
         for k in ("Main execution", "Main target", "Main side"):
             if k in r and r[k] != "–":
                 bits.append(f"{k.lower()}: {r[k]}")
@@ -362,12 +363,13 @@ def goal_placement(sd: SetPieceData, row: str, *, theme: Theme = DARK) -> go.Fig
                       line=dict(color=th.grid, width=1, dash="dot"), layer="below")
     fig.add_trace(go.Scatter(x=[0, 0, GOAL_W, GOAL_W], y=[0, GOAL_H, GOAL_H, 0], mode="lines",
                              line=dict(color=th.text, width=6), hoverinfo="skip", showlegend=False))
-    rc = A.result_col(sd)
-    palette = _palette(th)
-    vals = pts[rc].replace("", "Not coded") if rc and len(pts) else pd.Series(dtype=str)
+    from fap.setpiecelab.static import shot_color
+    att = (g["phase"].iloc[0] == "Attacking") if len(g) else True
+    src = pts["shot_outcome"] if "shot_outcome" in pts else pd.Series("", index=pts.index)
+    vals = src.replace("", "Not coded") if len(pts) else pd.Series(dtype=str)
     for i, v in enumerate(vals.value_counts().index if len(pts) else []):
         d = pts[vals == v]
-        col = A.OUTCOME_COLORS.get(v.lower(), palette[i % len(palette)])
+        col = shot_color(v, att, th)
         fig.add_trace(go.Scatter(x=d["goal_x_m"], y=d["goal_y_m"], mode="markers+text", name=f"{v} ({len(d)})",
                                  text=[f"#{t}" if t else "" for t in d["taker"]], textposition="middle right",
                                  textfont=dict(color=th.muted, size=10),
@@ -375,8 +377,8 @@ def goal_placement(sd: SetPieceData, row: str, *, theme: Theme = DARK) -> go.Fig
                                             f"{r['goal_y_m']:.2f} m" + (f"<br>taker #{r['taker']}" if r["taker"] else "")
                                             for _, r in d.iterrows()], hoverinfo="text",
                                  marker=dict(size=18, color=col, line=dict(color=th.bg, width=1.5))))
-    _base(fig, th, f"{row} — placement in the goal", f"{len(pts)} of {len(g)} located · as seen from the taker · "
-          "dotted = thirds of the goal", 380)
+    _base(fig, th, f"{row} — placement in the goal", f"{len(pts)} of {len(g)} located · colour = shot outcome ("
+          + ("goal green · saved red" if att else "goal against red · saved green") + ") · dotted = thirds of the goal", 380)
     fig.update_layout(xaxis=dict(range=[-1.2, GOAL_W + 1.2], visible=False),
                       yaxis=dict(range=[-0.4, GOAL_H + 0.6], visible=False, scaleanchor="x", scaleratio=1),
                       plot_bgcolor=th.bg)
