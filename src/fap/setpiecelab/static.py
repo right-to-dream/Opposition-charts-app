@@ -19,7 +19,7 @@ from fap.setpiecelab import analytics as A  # noqa: E402
 from fap.setpiecelab.loader import PITCH_L, PITCH_W, SetPieceData, is_yes  # noqa: E402
 
 OUT_COLORS = {"goal": "#e5484d", "shot": "#f97316", "threat": "#f5b301"}
-FOOTER = "SET PIECE LAB  ·  pitch 105 × 68 m"      # chart footer — the report sets its own ("" = none)
+FOOTER = ""      # optional chart footer ("" = none — no "Set Piece Lab" branding on charts)
 GOOD, BAD = "#22c55e", "#ef4444"
 
 

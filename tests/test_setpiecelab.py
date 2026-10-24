@@ -287,4 +287,4 @@ def test_no_overall_result_phase_colours_and_footer():
     pen = [i.text for i in D.type_insights(sd, "Penalty")]
     assert not any("contact" in t for t in pen)                    # direct: no contacts
     o = ReportOptions(dpi=40, footer="Club · Analysis")
-    assert build_report(sd, o)[:4] == b"%PDF" and S.FOOTER == "SET PIECE LAB  ·  pitch 105 × 68 m" and not o.log
+    assert build_report(sd, o)[:4] == b"%PDF" and S.FOOTER == "" and not o.log

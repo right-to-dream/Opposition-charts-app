@@ -39,7 +39,7 @@ DEFAULT_SECTIONS = tuple(s for s in SECTIONS if s != "sides")
 class ReportOptions:
     title: str = ""
     subtitle: str = ""
-    footer: str = "SET PIECE LAB"
+    footer: str = ""                          # bottom of every page ("" = none)
     theme: str = "Dark"
     include_insights: bool = True
     phases: tuple = ("Attacking", "Defending")
@@ -47,7 +47,7 @@ class ReportOptions:
     match_insights: bool = False              # short insights per match
     sections: tuple = DEFAULT_SECTIONS
     types: tuple = ()                         # restrict to these coded types (empty = all)
-    dpi: int = 150
+    dpi: int = 260                            # chart resolution (embedded as is — sharp when zoomed / printed)
     log: list = field(default_factory=list)
 
 
@@ -133,7 +133,7 @@ def _place(fig, imgs: list) -> None:
         for im, a in zip(imgs, asp):
             h = H * (1 / a) / tot
             ax = fig.add_axes([left, y - h, right - left, h - 0.008])
-            ax.imshow(im, interpolation="lanczos")
+            ax.imshow(im, interpolation="none")   # embedded at full resolution, no resampling
             ax.set_anchor("N")
             ax.axis("off")
             y -= h
@@ -141,7 +141,7 @@ def _place(fig, imgs: list) -> None:
     w = (right - left) / len(imgs)
     for k, im in enumerate(imgs):
         ax = fig.add_axes([left + k * w, bottom, w - (0.008 if len(imgs) > 1 else 0), top - bottom])
-        ax.imshow(im, interpolation="lanczos")
+        ax.imshow(im, interpolation="none")   # embedded at full resolution, no resampling
         ax.set_anchor("N")
         ax.axis("off")
 
